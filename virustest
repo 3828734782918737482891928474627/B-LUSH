@@ -1,0 +1,716 @@
+-- mxwa . CHAR — 
+-- Fully functional | Mobile + PC support | Drag & toggle UI
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+local UIS = game:GetService("UserInputService")
+local CoreGui = game:GetService("CoreGui")
+local IsMobile = UIS.TouchEnabled and not UIS.KeyboardEnabled
+local targetParent = (gethui and gethui()) or CoreGui or PlayerGui
+
+-- Clean up old UI
+if targetParent:FindFirstChild("PwdCharInterface") then
+    targetParent.PwdCharInterface:Destroy()
+end
+
+_G.UIVisible = true
+_G.UIToggleKey = Enum.KeyCode.RightShift
+
+-- State
+local isAvatarEnabled = false
+local isHeadlessEnabled = false
+local targetUserInput = ""
+
+-- 🌸 CUTE PASTEL THEME 🌸
+local Theme = {
+    -- Main palette — soft dreamy pastels
+    PrimaryPink     = Color3.fromRGB(255, 182, 193), -- Light pink
+    SecondaryLilac  = Color3.fromRGB(221, 212, 255), -- Soft purple
+    AccentSky       = Color3.fromRGB(173, 216, 230), -- Light blue
+    CreamBg         = Color3.fromRGB(255, 250, 252), -- Warm white
+    SoftWhite       = Color3.fromRGB(255, 255, 255), -- Pure white
+    PaleBlue        = Color3.fromRGB(240, 248, 255), -- Alice blue
+    BorderSoft      = Color3.fromRGB(255, 223, 230), -- Pink border
+    TextDark        = Color3.fromRGB(90, 70, 90),    -- Soft purple text
+    TextMuted       = Color3.fromRGB(150, 130, 150), -- Muted text
+    TextLight       = Color3.fromRGB(255, 255, 255), -- White text
+    ButtonIdle      = Color3.fromRGB(255, 228, 235),
+    ButtonHover     = Color3.fromRGB(255, 182, 193),
+    ButtonActive    = Color3.fromRGB(255, 130, 160),
+    ToggleOn        = Color3.fromRGB(179, 157, 255),
+    ToggleOff       = Color3.fromRGB(242, 235, 250),
+    ShadowGlow      = Color3.fromRGB(255, 200, 220)
+}
+
+-- ScreenGui
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "PwdCharInterface"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent = targetParent
+
+-- 📱 Mobile Floating Toggle Button
+local MobileToggleBtn
+if IsMobile then
+    MobileToggleBtn = Instance.new("ImageButton")
+    MobileToggleBtn.Name = "MobileToggleBtn"
+    MobileToggleBtn.Size = UDim2.new(0, 50, 0, 50)
+    MobileToggleBtn.Position = UDim2.new(0.03, 0, 0.15, 0)
+    MobileToggleBtn.BackgroundColor3 = Theme.PrimaryPink
+    MobileToggleBtn.BorderSizePixel = 0
+    MobileToggleBtn.Image = "rbxassetid://81412927404972" -- Cinnamoroll icon
+    MobileToggleBtn.ScaleType = Enum.ScaleType.Fit
+    MobileToggleBtn.ZIndex = 100
+    MobileToggleBtn.Parent = ScreenGui
+    
+    local Corner = Instance.new("UICorner")
+    Corner.CornerRadius = UDim.new(1, 0)
+    Corner.Parent = MobileToggleBtn
+    
+    local Stroke = Instance.new("UIStroke")
+    Stroke.Color = Theme.SecondaryLilac
+    Stroke.Thickness = 2
+    Stroke.Transparency = 0
+    Stroke.Parent = MobileToggleBtn
+    
+    -- Drag for mobile button
+    local mDragging, mDragStart, mStartPos
+    MobileToggleBtn.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            mDragging = true
+            mDragStart = input.Position
+            mStartPos = MobileToggleBtn.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then mDragging = false end
+            end)
+        end
+    end)
+    UIS.InputChanged:Connect(function(input)
+        if mDragging and (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement) then
+            local delta = input.Position - mDragStart
+            MobileToggleBtn.Position = UDim2.new(
+                mStartPos.Width.Scale, mStartPos.Width.Offset + delta.X,
+                mStartPos.Height.Scale, mStartPos.Height.Offset + delta.Y
+            )
+        end
+    end)
+end
+
+-- 🪟 Main Window Container
+local WindowOuter = Instance.new("Frame")
+WindowOuter.Name = "WindowOuter"
+WindowOuter.Size = UDim2.new(0, 540, 0, 380)
+WindowOuter.Position = UDim2.new(0.5, -270, 0.5, -190)
+WindowOuter.BackgroundColor3 = Theme.SecondaryLilac
+WindowOuter.BorderSizePixel = 0
+WindowOuter.Active = true
+WindowOuter.ClipsDescendants = true
+WindowOuter.Parent = ScreenGui
+
+local OuterCorner = Instance.new("UICorner")
+OuterCorner.CornerRadius = UDim.new(0, 20)
+OuterCorner.Parent = WindowOuter
+
+local OuterStroke = Instance.new("UIStroke")
+OuterStroke.Color = Theme.PrimaryPink
+OuterStroke.Thickness = 3
+OuterStroke.Parent = WindowOuter
+
+-- Inner content frame
+local WindowInner = Instance.new("Frame")
+WindowInner.Name = "WindowInner"
+WindowInner.Size = UDim2.new(1, -4, 1, -4)
+WindowInner.Position = UDim2.new(0, 2, 0, 2)
+WindowInner.BackgroundColor3 = Theme.CreamBg
+WindowInner.BorderSizePixel = 0
+WindowInner.ClipsDescendants = true
+WindowInner.Parent = WindowOuter
+
+local InnerCorner = Instance.new("UICorner")
+InnerCorner.CornerRadius = UDim.new(0, 18)
+InnerCorner.Parent = WindowInner
+
+-- 🎀 Header Bar
+local Header = Instance.new("Frame")
+Header.Name = "Header"
+Header.Size = UDim2.new(1, 0, 0, 50)
+Header.BackgroundColor3 = Theme.PrimaryPink
+Header.BorderSizePixel = 0
+Header.ZIndex = 10
+Header.Parent = WindowInner
+
+local HeaderCorner = Instance.new("UICorner")
+HeaderCorner.CornerRadius = UDim.new(0, 18)
+HeaderCorner.Parent = Header
+
+-- Subtle gradient glow
+local HeaderGlow = Instance.new("Frame")
+HeaderGlow.Size = UDim2.new(1, 0, 0, 15)
+HeaderGlow.Position = UDim2.new(0, 0, 1, 0)
+HeaderGlow.BackgroundColor3 = Theme.SecondaryLilac
+HeaderGlow.Transparency = 0.4
+HeaderGlow.ZIndex = 11
+HeaderGlow.Parent = Header
+
+local GlowGrad = Instance.new("UIGradient")
+GlowGrad.Rotation = 90
+GlowGrad.Transparency = NumberSequence.new{
+    NumberSequenceKeypoint.new(0, 0.4),
+    NumberSequenceKeypoint.new(1, 1)
+}
+GlowGrad.Parent = HeaderGlow
+
+-- Icon + Title
+local Icon = Instance.new("ImageLabel")
+Icon.Size = UDim2.new(0, 28, 0, 28)
+Icon.Position = UDim2.new(0, 15, 0.5, -14)
+Icon.BackgroundTransparency = 1
+Icon.Image = "rbxassetid://81412927404972"
+Icon.ScaleType = Enum.ScaleType.Fit
+Icon.Parent = Header
+
+local Title = Instance.new("TextLabel")
+Title.Name = "Title"
+Title.Size = UDim2.new(0.6, 0, 1, 0)
+Title.Position = UDim2.new(0, 53, 0, 0)
+Title.BackgroundTransparency = 1
+Title.Text = "✿ MXWA . CHAR ✿"
+Title.TextColor3 = Theme.TextLight
+Title.TextSize = 16
+Title.Font = Enum.Font.GothamBold
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Parent = Header
+
+local DateLabel = Instance.new("TextLabel")
+DateLabel.Name = "DateLabel"
+DateLabel.Size = UDim2.new(0.4, -15, 1, 0)
+DateLabel.Position = UDim2.new(0.6, 0, 0, 0)
+DateLabel.BackgroundTransparency = 1
+DateLabel.Text = ""
+DateLabel.TextColor3 = Color3.fromRGB(255, 230, 240)
+DateLabel.TextSize = 11
+DateLabel.Font = Enum.Font.Gotham
+DateLabel.TextXAlignment = Enum.TextXAlignment.Right
+DateLabel.Parent = Header
+
+-- Clock update
+local function updateClock()
+    DateLabel.Text = os.date("%A • %d %B • %y")
+end
+updateClock()
+task.spawn(function()
+    while task.wait(60) do updateClock() end
+end)
+
+-- 🖱️ Window Drag
+local dragging, dragInput, dragStart, startPos
+Header.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = WindowOuter.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then dragging = false end
+        end)
+    end
+end)
+Header.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        dragInput = input
+    end
+end)
+UIS.InputChanged:Connect(function(input)
+    if input == dragInput and dragging then
+        local delta = input.Position - dragStart
+        WindowOuter.Position = UDim2.new(
+            startPos.Width.Scale, startPos.Width.Offset + delta.X,
+            startPos.Height.Scale, startPos.Height.Offset + delta.Y
+        )
+    end
+end)
+
+-- 📄 Content Area
+local Content = Instance.new("Frame")
+Content.Name = "Content"
+Content.Size = UDim2.new(1, 0, 1, -50)
+Content.Position = UDim2.new(0, 0, 0, 50)
+Content.BackgroundTransparency = 1
+Content.Parent = WindowInner
+
+local Padding = Instance.new("UIPadding")
+Padding.PaddingTop = UDim.new(0, 20)
+Padding.PaddingLeft = UDim.new(0, 25)
+Padding.PaddingRight = UDim.new(0, 25)
+Padding.PaddingBottom = UDim.new(0, 20)
+Padding.Parent = Content
+
+local ListLayout = Instance.new("UIListLayout")
+ListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+ListLayout.Padding = UDim.new(0, 18)
+ListLayout.Parent = Content
+
+-- 🧩 Helper: Create Toggle Switch
+local function CreateToggle(parent, text, defaultState, callback)
+    local Row = Instance.new("Frame")
+    Row.Size = UDim2.new(1, 0, 0, 32)
+    Row.BackgroundTransparency = 1
+    Row.Parent = parent
+
+    local SwitchContainer = Instance.new("Frame")
+    SwitchContainer.Size = UDim2.new(0, 44, 0, 24)
+    SwitchContainer.Position = UDim2.new(0, 0, 0.5, -12)
+    SwitchContainer.BackgroundColor3 = defaultState and Theme.ToggleOn or Theme.ToggleOff
+    SwitchContainer.Parent = Row
+
+    local SwitchCorner = Instance.new("UICorner")
+    SwitchCorner.CornerRadius = UDim.new(0, 12)
+    SwitchCorner.Parent = SwitchContainer
+
+    local Knob = Instance.new("Frame")
+    Knob.Size = UDim2.new(0, 20, 0, 20)
+    Knob.Position = defaultState and UDim2.new(1, -22, 0.5, -10) or UDim2.new(0, 2, 0.5, -10)
+    Knob.BackgroundColor3 = Theme.SoftWhite
+    Knob.Parent = SwitchContainer
+
+    local KnobCorner = Instance.new("UICorner")
+    KnobCorner.CornerRadius = UDim.new(1, 0)
+    KnobCorner.Parent = Knob
+
+    local Label = Instance.new("TextLabel")
+    Label.Size = UDim2.new(1, -60, 1, 0)
+    Label.Position = UDim2.new(0, 56, 0, 0)
+    Label.BackgroundTransparency = 1
+    Label.Text = text
+    Label.TextColor3 = Theme.TextDark
+    Label.TextSize = 13
+    Label.Font = Enum.Font.GothamSemibold
+    Label.TextXAlignment = Enum.TextXAlignment.Left
+    Label.Parent = Row
+
+    local state = defaultState
+    local function update(s)
+        state = s
+        SwitchContainer.BackgroundColor3 = s and Theme.ToggleOn or Theme.ToggleOff
+        Knob.Position = s and UDim2.new(1, -22, 0.5, -10) or UDim2.new(0, 2, 0.5, -10)
+    end
+
+    Row.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            update(not state)
+            callback(state)
+        end
+    end)
+
+    return update
+end
+
+-- 🧩 Helper: Create Input Field
+local function CreateInput(parent, labelText, defaultVal, callback)
+    local Group = Instance.new("Frame")
+    Group.Size = UDim2.new(1, 0, 0, 58)
+    Group.BackgroundTransparency = 1
+    Group.Parent = parent
+
+    local Label = Instance.new("TextLabel")
+    Label.Size = UDim2.new(1, 0, 0, 20)
+    Label.BackgroundTransparency = 1
+    Label.Text = "💌 " .. labelText
+    Label.TextColor3 = Theme.TextMuted
+    Label.TextSize = 12
+    Label.Font = Enum.Font.Gotham
+    Label.TextXAlignment = Enum.TextXAlignment.Left
+    Label.Parent = Group
+
+    local InputBox = Instance.new("TextBox")
+    InputBox.Size = UDim2.new(1, 0, 0, 38)
+    InputBox.Position = UDim2.new(0, 0, 0, 20)
+    InputBox.BackgroundColor3 = Theme.SoftWhite
+    InputBox.BorderSizePixel = 0
+    InputBox.Text = defaultVal or ""
+    InputBox.PlaceholderText = "Enter Username or User ID ✨"
+    InputBox.PlaceholderColor3 = Theme.TextMuted
+    InputBox.TextColor3 = Theme.TextDark
+    InputBox.TextSize = 13
+    InputBox.Font = Enum.Font.Gotham
+    InputBox.TextXAlignment = Enum.TextXAlignment.Left
+    InputBox.Parent = Group
+
+    local BoxCorner = Instance.new("UICorner")
+    BoxCorner.CornerRadius = UDim.new(0, 10)
+    BoxCorner.Parent = InputBox
+
+    local BoxStroke = Instance.new("UIStroke")
+    BoxStroke.Color = Theme.BorderSoft
+    BoxStroke.Thickness = 2
+    BoxStroke.Parent = InputBox
+
+    local Pad = Instance.new("UIPadding")
+    Pad.PaddingLeft = UDim.new(0, 12)
+    Pad.PaddingTop = UDim.new(0, 8)
+    Pad.Parent = InputBox
+
+    InputBox:GetPropertyChangedSignal("Text"):Connect(function()
+        callback(InputBox.Text)
+    end)
+
+    return Group
+end
+
+-- 🧩 Helper: Create Keybind Selector
+local bindingKey = false
+local function CreateKeybind(parent, labelText, defaultKey, callback)
+    local Row = Instance.new("Frame")
+    Row.Size = UDim2.new(1, 0, 0, 32)
+    Row.BackgroundTransparency = 1
+    Row.Parent = parent
+
+    local Label = Instance.new("TextLabel")
+    Label.Size = UDim2.new(0, 180, 1, 0)
+    Label.BackgroundTransparency = 1
+    Label.Text = "🔒 " .. labelText
+    Label.TextColor3 = Theme.TextMuted
+    Label.TextSize = 12
+    Label.Font = Enum.Font.Gotham
+    Label.TextXAlignment = Enum.TextXAlignment.Left
+    Label.Parent = Row
+
+    local KeyBtn = Instance.new("TextButton")
+    KeyBtn.Size = UDim2.new(0, 130, 1, 0)
+    KeyBtn.Position = UDim2.new(1, -130, 0, 0)
+    KeyBtn.BackgroundColor3 = Theme.SoftWhite
+    KeyBtn.BorderSizePixel = 0
+    KeyBtn.Text = "[" .. defaultKey.Name .. "]"
+    KeyBtn.TextColor3 = Theme.TextDark
+    KeyBtn.TextSize = 12
+    KeyBtn.Font = Enum.Font.GothamBold
+    KeyBtn.Parent = Row
+
+    local BtnCorner = Instance.new("UICorner")
+    BtnCorner.CornerRadius = UDim.new(0, 8)
+    BtnCorner.Parent = KeyBtn
+
+    local BtnStroke = Instance.new("UIStroke")
+    BtnStroke.Color = Theme.SecondaryLilac
+    BtnStroke.Thickness = 2
+    BtnStroke.Parent = KeyBtn
+
+    KeyBtn.MouseButton1Click:Connect(function()
+        bindingKey = true
+        KeyBtn.Text = "⌨️ Press key..."
+        KeyBtn.TextColor3 = Theme.PrimaryPink
+    end)
+
+    UIS.InputBegan:Connect(function(input, gpe)
+        if bindingKey and input.UserInputType == Enum.UserInputType.Keyboard then
+            bindingKey = false
+            _G.UIToggleKey = input.KeyCode
+            KeyBtn.Text = "[" .. input.KeyCode.Name .. "]"
+            KeyBtn.TextColor3 = Theme.TextDark
+            callback(input.KeyCode)
+        end
+    end)
+end
+
+-- 🎯 Build UI Elements
+CreateToggle(Content, "Enable Avatar Copy ✨", isAvatarEnabled, function(v)
+    isAvatarEnabled = v
+end)
+
+CreateInput(Content, "Target User", targetUserInput, function(v)
+    targetUserInput = v
+end)
+
+CreateToggle(Content, "Visual Headless 🕶️", isHeadlessEnabled, function(v)
+    isHeadlessEnabled = v
+end)
+
+if not IsMobile then
+    CreateKeybind(Content, "Toggle UI Keybind", _G.UIToggleKey, function() end)
+end
+
+local UpdateUIVisible = CreateToggle(Content, "Show UI 👁️", _G.UIVisible, function(v)
+    _G.UIVisible = v
+    WindowOuter.Visible = _G.UIVisible
+end)
+
+-- Apply Button
+local ApplyBtn = Instance.new("TextButton")
+ApplyBtn.Name = "ApplyBtn"
+ApplyBtn.Size = UDim2.new(1, 0, 0, 45)
+ApplyBtn.BackgroundColor3 = Theme.PrimaryPink
+ApplyBtn.BorderSizePixel = 0
+ApplyBtn.Text = "🌸 Apply & Reset Character 🌸"
+ApplyBtn.TextColor3 = Theme.TextLight
+ApplyBtn.TextSize = 14
+ApplyBtn.Font = Enum.Font.GothamBold
+ApplyBtn.AutoLocalize = false
+ApplyBtn.Parent = Content
+
+local ApplyCorner = Instance.new("UICorner")
+ApplyCorner.CornerRadius = UDim.new(0, 12)
+ApplyCorner.Parent = ApplyBtn
+
+local ApplyStroke = Instance.new("UIStroke")
+ApplyStroke.Color = Theme.SecondaryLilac
+ApplyStroke.Thickness = 2
+ApplyStroke.Parent = ApplyBtn
+
+-- Button hover effects
+ApplyBtn.MouseEnter:Connect(function()
+    ApplyBtn.BackgroundColor3 = Theme.ButtonHover
+end)
+ApplyBtn.MouseLeave:Connect(function()
+    ApplyBtn.BackgroundColor3 = Theme.PrimaryPink
+end)
+ApplyBtn.MouseButton1Down:Connect(function()
+    ApplyBtn.BackgroundColor3 = Theme.ButtonActive
+end)
+ApplyBtn.MouseButton1Up:Connect(function()
+    ApplyBtn.BackgroundColor3 = Theme.ButtonHover
+end)
+
+-- 🔄 UI Toggle Logic
+local function toggleUI()
+    _G.UIVisible = not _G.UIVisible
+    WindowOuter.Visible = _G.UIVisible
+    UpdateUIVisible(_G.UIVisible)
+end
+
+if IsMobile then
+    MobileToggleBtn.MouseButton1Click:Connect(toggleUI)
+else
+    UIS.InputBegan:Connect(function(input, gp)
+        if not gp and input.KeyCode == _G.UIToggleKey then
+            toggleUI()
+        end
+    end)
+end
+
+-- 🧠 Core Logic (unchanged & preserved fully)
+local function getUserIdFromInput(input)
+    input = tostring(input or ""):gsub("%s+", ""):gsub("^@", "")
+    if input == "" then return nil end
+    local id = tonumber(input)
+    if id then return id end
+    local success, result = pcall(function()
+        return Players:GetUserIdFromNameAsync(input)
+    end)
+    if success and result then return result end
+    return nil
+end
+
+local function applyAnimationsFromDummy(char, dummyModel)
+    local myAnimate = char:FindFirstChild("Animate")
+    local dummyAnimate = dummyModel:FindFirstChild("Animate")
+    local myHumanoid = char:FindFirstChildOfClass("Humanoid")
+    if not myAnimate or not dummyAnimate or not myHumanoid then return end
+    local animator = myHumanoid:FindFirstChildOfClass("Animator")
+    if animator then
+        for _, t in ipairs(animator:GetPlayingAnimationTracks()) do t:Stop(0) end
+    end
+    for _, dc in ipairs(dummyAnimate:GetChildren()) do
+        local mc = myAnimate:FindFirstChild(dc.Name)
+        if mc then
+            for _, a in ipairs(dc:GetChildren()) do
+                if a:IsA("Animation") then
+                    local ta = mc:FindFirstChild(a.Name)
+                    if ta and ta:IsA("Animation") then
+                        ta.AnimationId = a.AnimationId
+                    else
+                        a:Clone().Parent = mc
+                    end
+                end
+            end
+        end
+    end
+    myAnimate.Disabled = true
+    task.wait(0.05)
+    myAnimate.Disabled = false
+end
+
+local function applyFullOutfit(char)
+    if not isAvatarEnabled or targetUserInput == "" then return end
+    local id = getUserIdFromInput(targetUserInput)
+    if not id then return end
+    task.spawn(function()
+        local hum = char:WaitForChild("Humanoid", 5)
+        if not hum then return end
+        local ok, dummy = pcall(function()
+            return Players:CreateHumanoidModelFromUserId(id)
+        end)
+        if not ok or not dummy then return end
+        
+        -- Clear old outfit
+        for _, x in ipairs(char:GetChildren()) do
+            if x:IsA("Accessory") or x:IsA("Shirt") or x:IsA("Pants") 
+                or x:IsA("ShirtGraphic") or x:IsA("BodyColors") 
+                or x:IsA("CharacterMesh") then
+                x:Destroy()
+            end
+        end
+        
+        -- Apply description
+        pcall(function()
+            local dHum = dummy:FindFirstChildOfClass("Humanoid")
+            if dHum then
+                local desc = dHum:GetAppliedDescription()
+                if desc then hum:ApplyDescription(desc) end
+            end
+        end)
+        
+        -- BodyColors
+        local tbc = dummy:FindFirstChildOfClass("BodyColors")
+        if tbc then
+            local obc = char:FindFirstChildOfClass("BodyColors")
+            if obc then obc:Destroy() end
+            tbc:Clone().Parent = char
+        end
+        
+        -- Clothing
+        for _, x in ipairs(dummy:GetChildren()) do
+            if x:IsA("Shirt") or x:IsA("Pants") or x:IsA("ShirtGraphic") or x:IsA("CharacterMesh") then
+                x:Clone().Parent = char
+            end
+        end
+        
+        -- Meshes
+        for _, dp in ipairs(dummy:GetChildren()) do
+            if dp:IsA("MeshPart") and dp.Name ~= "Head" then
+                local mp = char:FindFirstChild(dp.Name)
+                if mp and mp:IsA("MeshPart") then
+                    pcall(function()
+                        mp.MeshId = dp.MeshId
+                        mp.TextureID = dp.TextureID
+                    end)
+                end
+            end
+        end
+        
+        -- Head handling
+        local tHead = dummy:FindFirstChild("Head")
+        local mHead = char:FindFirstChild("Head")
+        if tHead and mHead then
+            local oldFake = char:FindFirstChild("FakeHead")
+            if oldFake then oldFake:Destroy() end
+            for _, c in ipairs(mHead:GetChildren()) do
+                if c:IsA("SpecialMesh") or c:IsA("CharacterMesh") 
+                    or c:IsA("Decal") or c:IsA("Texture") 
+                    or c:IsA("SurfaceAppearance") or c:IsA("WrapTarget") then
+                    c:Destroy()
+                end
+            end
+            mHead.Color = tHead.Color
+            local meshOk = false
+            if tHead:IsA("MeshPart") and mHead:IsA("MeshPart") then
+                meshOk = pcall(function()
+                    mHead.MeshId = tHead.MeshId
+                    mHead.TextureID = tHead.TextureID
+                end)
+            end
+            for _, c in ipairs(tHead:GetChildren()) do
+                if c:IsA("SpecialMesh") or c:IsA("Decal") or c:IsA("SurfaceAppearance") then
+                    c:Clone().Parent = mHead
+                end
+            end
+            if tHead:IsA("MeshPart") and not meshOk then
+                mHead.Transparency = 1
+                local fake = tHead:Clone()
+                fake.Name = "FakeHead"
+                fake.CanCollide = false
+                fake.Parent = char
+                local weld = Instance.new("Weld")
+                weld.Part0 = mHead
+                weld.Part1 = fake
+                weld.C0 = CFrame.new()
+                weld.C1 = CFrame.new()
+                weld.Parent = fake
+            else
+                mHead.Transparency = tHead.Transparency
+            end
+        end
+        
+        -- Accessories
+        for _, acc in ipairs(dummy:GetChildren()) do
+            if acc:IsA("Accessory") then
+                local nc = acc:Clone()
+                local hand = nc:FindFirstChild("Handle")
+                if hand then
+                    hand.CanCollide = false
+                    nc.Parent = char
+                    local att = hand:FindFirstChildOfClass("Attachment")
+                    if att then
+                        local targetAtt = nil
+                        for _, p in ipairs(char:GetChildren()) do
+                            if p:IsA("BasePart") then
+                                local a = p:FindFirstChild(att.Name)
+                                if a and a:IsA("Attachment") then
+                                    targetAtt = a; break
+                                end
+                            end
+                        end
+                        if targetAtt then
+                            local w = Instance.new("Weld")
+                            w.Part0 = hand
+                            w.Part1 = targetAtt.Parent
+                            w.C0 = att.CFrame
+                            w.C1 = targetAtt.CFrame
+                            w.Parent = hand
+                        end
+                    else
+                        local head = char:FindFirstChild("Head")
+                        if head then
+                            local w = Instance.new("Weld")
+                            w.Part0 = hand
+                            w.Part1 = head
+                            w.C0 = CFrame.new()
+                            w.C1 = CFrame.new()
+                            w.Parent = hand
+                        end
+                    end
+                end
+            end
+        end
+        
+        applyAnimationsFromDummy(char, dummy)
+        
+        -- Headless effect
+        if isHeadlessEnabled then
+            task.wait(0.1)
+            if mHead then
+                mHead.Transparency = 1
+                local face = mHead:FindFirstChildOfClass("Decal")
+                if face then face.Transparency = 1 end
+                local fake = char:FindFirstChild("FakeHead")
+                if fake then fake.Transparency = 1 end
+            end
+        end
+        
+        dummy:Destroy()
+    end)
+end
+
+local function resetCharacter()
+    local char = LocalPlayer.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        hum.Health = 0
+    else
+        pcall(function() char:BreakJoints() end)
+    end
+end
+
+-- Re-apply on respawn
+LocalPlayer.CharacterAdded:Connect(function(newChar)
+    if isAvatarEnabled and targetUserInput ~= "" then
+        task.wait(0.5)
+        applyFullOutfit(newChar)
+    end
+end)
+
+-- Apply button action
+ApplyBtn.MouseButton1Click:Connect(function()
+    applyFullOutfit(LocalPlayer.Character)
+    task.wait(0.2)
+    resetCharacter()
+end)
