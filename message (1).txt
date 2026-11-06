@@ -1,0 +1,160 @@
+--// Fully Updated Script using Fixed Prediction Set (Final Version)
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+local Stats = game:GetService("Stats")
+local StarterGui = game:GetService("StarterGui")
+
+local player = Players.LocalPlayer
+local camera = Workspace.CurrentCamera
+
+StarterGui:SetCore("SendNotification", {
+	Title = "(lacey.exe)",
+	Text = "Execution started.",
+	Duration = 3
+})
+
+local character = player.Character or player.CharacterAdded:Wait()
+local rootPart = character:WaitForChild("HumanoidRootPart")
+local humanoid = character:WaitForChild("Humanoid")
+
+local followEnabled = false
+local targetPlayer = nil
+
+player.CharacterAdded:Connect(function(char)
+	character = char
+	rootPart = char:WaitForChild("HumanoidRootPart")
+	humanoid = char:WaitForChild("Humanoid")
+	humanoid.AutoRotate = not followEnabled
+end)
+
+--// Final Prediction Table
+local function getBasePrediction()
+	local ping = 50
+	local stats = Stats:FindFirstChild("PerformanceStats")
+	if stats and stats:FindFirstChild("Ping") then
+		ping = stats.Ping:GetValue()
+	end
+
+	if ping <= 50 then return 0.02
+	elseif ping <= 60 then return 0.025
+	elseif ping <= 70 then return 0.03
+	elseif ping <= 80 then return 0.035
+	elseif ping <= 90 then return 0.04
+	elseif ping <= 100 then return 0.045
+	elseif ping <= 110 then return 0.05
+	elseif ping <= 120 then return 0.055
+	elseif ping <= 130 then return 0.06
+	elseif ping <= 140 then return 0.065
+	elseif ping <= 150 then return 0.07
+	elseif ping <= 160 then return 0.075
+	elseif ping <= 170 then return 0.08
+	elseif ping <= 180 then return 0.085
+	elseif ping <= 190 then return 0.09
+	else return 0.1 end
+end
+
+local function getPlayerAtCenter()
+	local screenCenter = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
+	local closestPlayer, closestDist = nil, math.huge
+
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= player and plr.Character and plr.Character:FindFirstChild("Head") then
+			local head = plr.Character.Head
+			local screenPos, onScreen = camera:WorldToViewportPoint(head.Position)
+			if onScreen then
+				local dist = (Vector2.new(screenPos.X, screenPos.Y) - screenCenter).Magnitude
+				if dist < closestDist then
+					closestDist = dist
+					closestPlayer = plr
+				end
+			end
+		end
+	end
+
+	return closestPlayer
+end
+
+local function getPredictedHeadPosition(head)
+	local velocity = head.Velocity
+	local horizontalVelocity = Vector3.new(velocity.X, 0, velocity.Z)
+	local horizontalSpeed = horizontalVelocity.Magnitude
+	local verticalSpeed = math.abs(velocity.Y)
+
+	local distance = (head.Position - rootPart.Position).Magnitude
+	local predictionTime = getBasePrediction()
+
+	-- Adjust prediction time based on distance
+	if distance > 75 then
+		predictionTime += 0.03
+	elseif distance > 40 then
+		predictionTime += 0.01
+	end
+
+	local lookVector = (head.Position - rootPart.Position).Unit
+	local sideVector = lookVector:Cross(Vector3.new(0, 1, 0)).Unit
+	local lateralSpeed = math.abs(horizontalVelocity:Dot(sideVector))
+	local forwardSpeed = math.abs(horizontalVelocity:Dot(lookVector))
+
+	local usePrediction = lateralSpeed > forwardSpeed * 0.6
+	if verticalSpeed > 1 and horizontalSpeed < 0.1 then return head.Position end
+	if horizontalSpeed < 0.5 or not usePrediction then return head.Position end
+
+	return head.Position + horizontalVelocity * predictionTime
+end
+
+RunService:BindToRenderStep("SnapToTarget", Enum.RenderPriority.Camera.Value + 1, function()
+	if followEnabled and targetPlayer and targetPlayer.Character and rootPart then
+		local head = targetPlayer.Character:FindFirstChild("Head")
+		if head then
+			local distanceVec = head.Position - rootPart.Position
+			local flatDistance = Vector3.new(distanceVec.X, 0, distanceVec.Z).Magnitude
+			local verticalOffset = math.abs(distanceVec.Y)
+
+			if flatDistance <= 1.2 and verticalOffset > 2 then return end
+
+			local predicted = getPredictedHeadPosition(head)
+			local targetPos = Vector3.new(predicted.X, rootPart.Position.Y, predicted.Z)
+			local direction = (targetPos - rootPart.Position).Unit
+			local lookVector = Vector3.new(direction.X, 0, direction.Z)
+
+			rootPart.CFrame = CFrame.new(rootPart.Position, rootPart.Position + lookVector)
+		end
+	end
+end)
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then return end
+	if input.KeyCode == Enum.KeyCode.V then
+		followEnabled = not followEnabled
+		if followEnabled then
+		targetPlayer = getPlayerAtCenter()
+			if targetPlayer then
+				StarterGui:SetCore("SendNotification", {
+					Title = "Lock-On Enabled",
+					Text = "Target: " .. targetPlayer.Name,
+					Duration = 3
+				})
+			else
+				StarterGui:SetCore("SendNotification", {
+					Title = "Lock-On Enabled",
+					Text = "No target found.",
+					Duration = 2
+				})
+			end
+		else
+			targetPlayer = nil
+			StarterGui:SetCore("SendNotification", {
+				Title = "Lock-On Disabled",
+				Text = "Stopped tracking.",
+				Duration = 2
+			})
+			camera.CameraSubject = player.Character:FindFirstChild("Humanoid")
+		end
+		if humanoid then
+			humanoid.AutoRotate = not followEnabled
+		end
+	end
+end)
