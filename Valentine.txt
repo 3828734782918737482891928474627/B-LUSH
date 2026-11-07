@@ -11,8 +11,6 @@ shared.Glory = {
             ['[Revolver]']         = "Valentine",
             ['[TacticalShotgun]']  = "Valentine",
             ['[Knife]']            = "Love Kukri",
-            ['[Flamethrower]']     = "Valentine",
-            ['[RPG]']              = "Valentine",
             ['[Riffle]']           = "Valentine",
             ['[Shotgun]']          = "Valentine",
         },
@@ -203,24 +201,6 @@ local function applygun(tool, name)
         end
     end
 
-    -- handle particles (only on Handle, NOT on Default or character parts)
-    local sa = replicatedstorage:FindFirstChild("SkinAssets")
-    if sa then
-        local particlefolder = sa:FindFirstChild("GunHandleParticle")
-        if particlefolder then
-            local particlesource = particlefolder:FindFirstChild(name)
-            if particlesource then
-                local pe = particlesource:FindFirstChild("ParticleEmitter")
-                if pe then
-                    for _, existing in ipairs(handle:GetChildren()) do
-                        if existing:IsA("ParticleEmitter") then existing:Destroy() end
-                    end
-                    pe:Clone().Parent = handle
-                end
-            end
-        end
-    end
-
     -- FLAMETHROWER FIX
     if tool.Name == "[Flamethrower]" then
         local sa2 = replicatedstorage:FindFirstChild("SkinAssets")
@@ -246,24 +226,14 @@ local function applygun(tool, name)
                                 if toolchar and obj.Parent and obj.Parent:IsA("BasePart") then
                                     local dist = (obj.Parent.Position - toolchar:GetPivot().Position).Magnitude
                                     if dist < 60 then
-                                        obj.Texture = "rbxassetid://241778280"
-                                        obj.Color = ColorSequence.new(Color3.fromRGB(255, 100, 150))
+                                        obj.Texture = "rbxassetid://6550202422"
+                                
                                     end
                                 end
                             end
                         end)
                     end)
                 else
-                    -- fallback texture swap on handle only
-                    for _, obj in ipairs(handle:GetDescendants()) do
-                        if obj:IsA("ParticleEmitter") then
-                            obj.Texture = "rbxassetid://241778280"
-                        end
-                    end
-                end
-            end
-        end
-    end
 
     handle:SetAttribute("SkinName", name)
 end
