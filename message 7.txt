@@ -1,0 +1,511 @@
+
+--[[
+    cute LIGHTING & FOG GUI
+    Client-side visual editor made by mxwa
+    
+]]
+
+local Players = game:GetService("Players")
+local Lighting = game:GetService("Lighting")
+local UIS = game:GetService("UserInputService")
+
+local Player = Players.LocalPlayer
+local PlayerGui = Player:WaitForChild("PlayerGui")
+
+-- Remove previous GUI
+local old = PlayerGui:FindFirstChild("LightingControlGUI")
+if old then old:Destroy() end
+
+-- Save original settings
+local Defaults = {
+    FogColor = Lighting.FogColor,
+    FogStart = Lighting.FogStart,
+    FogEnd = Lighting.FogEnd,
+    Brightness = Lighting.Brightness,
+    Ambient = Lighting.Ambient,
+    OutdoorAmbient = Lighting.OutdoorAmbient,
+    ClockTime = Lighting.ClockTime
+}
+
+local FogEnabled = true
+local FogStrength = 0
+local FogStart = Defaults.FogStart
+local FogEnd = Defaults.FogEnd
+
+-- 🎀 Theme
+local PINK = Color3.fromRGB(255, 125, 185)
+local LIGHT = Color3.fromRGB(255, 220, 237)
+local DARK = Color3.fromRGB(65, 35, 55)
+local PANEL = Color3.fromRGB(255, 240, 247)
+local WHITE = Color3.fromRGB(255, 255, 255)
+local MUTED = Color3.fromRGB(160, 110, 135)
+
+local GUI = Instance.new("ScreenGui")
+GUI.Name = "LightingControlGUI"
+GUI.ResetOnSpawn = false
+GUI.Parent = PlayerGui
+
+-- Utility
+local function Create(class, props, parent)
+    local obj = Instance.new(class)
+    for k,v in pairs(props) do
+        obj[k] = v
+    end
+    obj.Parent = parent
+    return obj
+end
+
+local function Round(obj, radius)
+    Create("UICorner", {
+        CornerRadius = UDim.new(0, radius)
+    }, obj)
+end
+
+local function Stroke(obj, color, thickness)
+    Create("UIStroke", {
+        Color = color,
+        Thickness = thickness or 1.5
+    }, obj)
+end
+
+-- ☁ Toggle button
+local Toggle = Create("TextButton", {
+    Size = UDim2.fromOffset(58, 58),
+    Position = UDim2.new(0, 20, 0.5, -29),
+    BackgroundColor3 = PINK,
+    Text = "☁",
+    TextSize = 29,
+    TextColor3 = WHITE,
+    Font = Enum.Font.GothamBold,
+    AutoButtonColor = true
+}, GUI)
+
+Round(Toggle, 18)
+Stroke(Toggle, WHITE, 2)
+
+-- Main panel
+local Panel = Create("Frame", {
+    Size = UDim2.fromOffset(390, 590),
+    Position = UDim2.new(0, 95, 0.5, -295),
+    BackgroundColor3 = PANEL,
+    BorderSizePixel = 0,
+    Visible = false
+}, GUI)
+
+Round(Panel, 18)
+Stroke(Panel, PINK, 2)
+
+-- Header
+local Header = Create("Frame", {
+    Size = UDim2.new(1, 0, 0, 65),
+    BackgroundColor3 = PINK,
+    BorderSizePixel = 0
+}, Panel)
+
+Round(Header, 18)
+
+Create("TextLabel", {
+    Size = UDim2.new(1, -65, 1, 0),
+    Position = UDim2.fromOffset(18, 0),
+    BackgroundTransparency = 1,
+    Text = " xXMXWA LIGHTING STUDIOXx",
+    TextColor3 = WHITE,
+    TextSize = 17,
+    Font = Enum.Font.GothamBold,
+    TextXAlignment = Enum.TextXAlignment.Left
+}, Header)
+
+local Close = Create("TextButton", {
+    Size = UDim2.fromOffset(36, 36),
+    Position = UDim2.new(1, -45, 0, 14),
+    BackgroundColor3 = Color3.fromRGB(255, 180, 210),
+    Text = "×",
+    TextSize = 25,
+    TextColor3 = WHITE,
+    Font = Enum.Font.GothamBold
+}, Header)
+
+Round(Close, 12)
+
+
+local Scroll = Create("ScrollingFrame", {
+    Size = UDim2.new(1, -20, 1, -85),
+    Position = UDim2.fromOffset(10, 75),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 5,
+    ScrollBarImageColor3 = PINK,
+    AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    CanvasSize = UDim2.new(0,0,0,0)
+}, Panel)
+
+Create("UIListLayout", {
+    Padding = UDim.new(0, 9),
+    SortOrder = Enum.SortOrder.LayoutOrder
+}, Scroll)
+
+Create("UIPadding", {
+    PaddingLeft = UDim.new(0, 5),
+    PaddingRight = UDim.new(0, 5),
+    PaddingBottom = UDim.new(0, 12),
+    PaddingTop = UDim.new(0, 5)
+}, Scroll)
+
+-- Section headings
+local function Section(name)
+    local label = Create("TextLabel", {
+        Size = UDim2.new(1, 0, 0, 32),
+        BackgroundColor3 = LIGHT,
+        Text = "  " .. name,
+        TextColor3 = DARK,
+        TextSize = 14,
+        Font = Enum.Font.GothamBold,
+        TextXAlignment = Enum.TextXAlignment.Left
+    }, Scroll)
+    Round(label, 10)
+end
+
+-- Buttons
+local function Button(name, callback, height)
+    local btn = Create("TextButton", {
+        Size = UDim2.new(1, 0, 0, height or 36),
+        BackgroundColor3 = PINK,
+        Text = name,
+        TextColor3 = WHITE,
+        TextSize = 12,
+        Font = Enum.Font.GothamBold
+    }, Scroll)
+
+    Round(btn, 10)
+    btn.MouseButton1Click:Connect(callback)
+    return btn
+end
+
+-- Sliders
+local function Slider(name, min, max, initial, callback, format)
+    local box = Create("Frame", {
+        Size = UDim2.new(1, 0, 0, 58),
+        BackgroundColor3 = WHITE,
+        BorderSizePixel = 0
+    }, Scroll)
+
+    Round(box, 10)
+    Stroke(box, LIGHT, 1)
+
+    local label = Create("TextLabel", {
+        Size = UDim2.new(1, -20, 0, 22),
+        Position = UDim2.fromOffset(10, 4),
+        BackgroundTransparency = 1,
+        TextColor3 = DARK,
+        TextSize = 12,
+        Font = Enum.Font.GothamBold,
+        TextXAlignment = Enum.TextXAlignment.Left
+    }, box)
+
+    local bar = Create("TextButton", {
+        Size = UDim2.new(1, -20, 0, 9),
+        Position = UDim2.fromOffset(10, 37),
+        BackgroundColor3 = LIGHT,
+        Text = "",
+        AutoButtonColor = false
+    }, box)
+
+    Round(bar, 10)
+
+    local fill = Create("Frame", {
+        BackgroundColor3 = PINK,
+        Size = UDim2.new(0, 0, 1, 0),
+        BorderSizePixel = 0
+    }, bar)
+
+    Round(fill, 10)
+
+    local value = initial
+    local dragging = false
+
+    local function SetValue(v)
+        value = math.clamp(v, min, max)
+
+        if format == "int" then
+            value = math.floor(value + 0.5)
+        elseif format == "time" then
+            value = math.floor(value * 100 + 0.5) / 100
+        else
+            value = math.floor(value * 10 + 0.5) / 10
+        end
+
+        local p = (value - min) / (max - min)
+        fill.Size = UDim2.new(p, 0, 1, 0)
+        label.Text = name .. "   •   " .. tostring(value)
+
+        callback(value)
+    end
+
+    local function Update(x)
+        local p = math.clamp(
+            (x - bar.AbsolutePosition.X) / bar.AbsoluteSize.X,
+            0, 1
+        )
+        SetValue(min + (max - min) * p)
+    end
+
+    bar.MouseButton1Down:Connect(function()
+        dragging = true
+        Update(UIS:GetMouseLocation().X)
+    end)
+
+    UIS.InputChanged:Connect(function(input)
+        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            Update(input.Position.X)
+        end
+    end)
+
+    UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+        end
+    end)
+
+    SetValue(initial)
+    return SetValue
+end
+
+-- Fog
+local function ApplyFog()
+    if FogEnabled then
+        Lighting.FogStart = FogStart
+        Lighting.FogEnd = math.max(
+            FogStart + 1,
+            FogStart + (FogEnd - FogStart) * (1 - FogStrength / 100)
+        )
+    else
+        Lighting.FogStart = 0
+        Lighting.FogEnd = 1000000
+    end
+end
+
+Section("🌫 FOG CONTROLS")
+
+local FogToggle
+FogToggle = Button("☁ FOG: ON", function()
+    FogEnabled = not FogEnabled
+    FogToggle.Text = FogEnabled and "☁ FOG: ON" or "☁ FOG: OFF"
+    ApplyFog()
+end)
+
+Slider("Fog Strength", 0, 100, 0, function(v)
+    FogStrength = v
+    ApplyFog()
+end, "int")
+
+Slider("Fog Start Distance", 0, 10000, FogStart, function(v)
+    FogStart = v
+    ApplyFog()
+end, "int")
+
+Slider("Fog End Distance", 1, 10000, FogEnd, function(v)
+    FogEnd = math.max(v, FogStart + 1)
+    ApplyFog()
+end, "int")
+
+-- Colors
+Section("🎨 COLOR PRESETS")
+
+local Presets = {
+    {"🔴 Red", Color3.fromRGB(255,0,0)},
+    {"🟠 Orange", Color3.fromRGB(255,130,0)},
+    {"🟡 Yellow", Color3.fromRGB(255,255,0)},
+    {"🔵 Blue", Color3.fromRGB(0,90,255)},
+    {"🟢 Green", Color3.fromRGB(0,255,0)},
+    {"🩵 Cyan", Color3.fromRGB(0,255,255)},
+    {"🟣 Purple", Color3.fromRGB(150,0,255)},
+    {"🩷 Pink", Color3.fromRGB(255,80,170)},
+    {"🌸 Light Pink", Color3.fromRGB(255,180,210)},
+    {"⚪ White", Color3.fromRGB(255,255,255)},
+    {"⚫ Black", Color3.fromRGB(0,0,0)},
+    {"🟤 Brown", Color3.fromRGB(130,75,35)}
+}
+
+local target = "FogColor"
+local Swatch
+
+local function ApplyColor(color)
+    Lighting[target] = color
+    Swatch.BackgroundColor3 = color
+end
+
+local TargetFrame = Create("Frame", {
+    Size = UDim2.new(1,0,0,35),
+    BackgroundTransparency = 1
+}, Scroll)
+
+Create("UIListLayout", {
+    FillDirection = Enum.FillDirection.Horizontal,
+    Padding = UDim.new(0,5)
+}, TargetFrame)
+
+for _, item in ipairs({
+    {"FogColor","FOG"},
+    {"Ambient","AMBIENT"},
+    {"OutdoorAmbient","OUTDOOR"}
+}) do
+    local b = Create("TextButton", {
+        Size = UDim2.new(0,105,1,0),
+        BackgroundColor3 = PINK,
+        Text = item[2],
+        TextColor3 = WHITE,
+        TextSize = 10,
+        Font = Enum.Font.GothamBold
+    }, TargetFrame)
+
+    Round(b, 8)
+
+    b.MouseButton1Click:Connect(function()
+        target = item[1]
+        Swatch.BackgroundColor3 = Lighting[target]
+    end)
+end
+
+Swatch = Create("Frame", {
+    Size = UDim2.new(1,0,0,35),
+    BackgroundColor3 = Lighting.FogColor
+}, Scroll)
+
+Round(Swatch, 10)
+Stroke(Swatch, PINK, 1)
+
+Create("TextLabel", {
+    Size = UDim2.new(1,0,1,0),
+    BackgroundTransparency = 1,
+    Text = "CURRENT SELECTED COLOR 💗",
+    TextColor3 = DARK,
+    TextSize = 12,
+    Font = Enum.Font.GothamBold
+}, Swatch)
+
+local Grid = Create("Frame", {
+    Size = UDim2.new(1,0,0,135),
+    BackgroundTransparency = 1
+}, Scroll)
+
+Create("UIGridLayout", {
+    CellSize = UDim2.new(0,115,0,35),
+    CellPadding = UDim2.fromOffset(5,5)
+}, Grid)
+
+for _, preset in ipairs(Presets) do
+    local b = Create("TextButton", {
+        BackgroundColor3 = preset[2],
+        Text = preset[1],
+        TextColor3 = WHITE,
+        TextSize = 11,
+        Font = Enum.Font.GothamBold
+    }, Grid)
+
+    Round(b, 9)
+
+    b.MouseButton1Click:Connect(function()
+        ApplyColor(preset[2])
+    end)
+end
+
+-- RGB picker
+Section("🖌 CUSTOM RGB PICKER")
+
+local RGB = {R=255,G=255,B=255}
+
+local function UpdateRGB()
+    ApplyColor(Color3.fromRGB(RGB.R,RGB.G,RGB.B))
+end
+
+Slider("RED",0,255,255,function(v)
+    RGB.R=v
+    UpdateRGB()
+end,"int")
+
+Slider("GREEN",0,255,255,function(v)
+    RGB.G=v
+    UpdateRGB()
+end,"int")
+
+Slider("BLUE",0,255,255,function(v)
+    RGB.B=v
+    UpdateRGB()
+end,"int")
+
+-- Lighting
+Section("💡 LIGHTING CONTROLS")
+
+Slider("Brightness",0,10,Defaults.Brightness,function(v)
+    Lighting.Brightness=v
+end)
+
+Slider("ClockTime",0,24,Defaults.ClockTime,function(v)
+    Lighting.ClockTime=v
+end,"time")
+
+-- Reset
+Section("⚙ SETTINGS")
+
+Button("💗 RESET TO DEFAULT",function()
+    FogEnabled=true
+    FogStrength=0
+    FogStart=Defaults.FogStart
+    FogEnd=Defaults.FogEnd
+
+    for property,value in pairs(Defaults) do
+        Lighting[property]=value
+    end
+
+    target="FogColor"
+    Swatch.BackgroundColor3=Lighting.FogColor
+    FogToggle.Text="☁ FOG: ON"
+end,42)
+
+-- Toggle
+Toggle.MouseButton1Click:Connect(function()
+    Panel.Visible = not Panel.Visible
+end)
+
+Close.MouseButton1Click:Connect(function()
+    Panel.Visible=false
+end)
+
+-- Drag helper for both panel and toggle
+local function MakeDraggable(object, handle)
+    local dragging = false
+    local startMouse
+    local startPos
+
+    handle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            startMouse = input.Position
+            startPos = object.Position
+        end
+    end)
+
+    UIS.InputChanged:Connect(function(input)
+        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            local delta = input.Position-startMouse
+
+            object.Position = UDim2.new(
+                startPos.X.Scale,
+                startPos.X.Offset+delta.X,
+                startPos.Y.Scale,
+                startPos.Y.Offset+delta.Y
+            )
+        end
+    end)
+
+    UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging=false
+        end
+    end)
+end
+
+MakeDraggable(Panel,Header)
+MakeDraggable(Toggle,Toggle)
+
+print("🎀 Pink Lighting Studio loaded!")
