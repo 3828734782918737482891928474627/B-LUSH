@@ -1,0 +1,1916 @@
+local UIS = game:GetService("UserInputService")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local CoreGui = game:GetService("CoreGui")
+local lp = Players.LocalPlayer
+local cam = workspace.CurrentCamera
+local mouse = lp:GetMouse()
+
+local cfg = {
+    silentAim = true,
+    useKeybind = true,
+    silentAimKey = Enum.KeyCode.V,
+    uiToggleKey = Enum.KeyCode.RightControl,
+    silentAimHitChance = 100,
+    silentAimFOV = 150,
+    silentAimFOVShow = false,
+    silentAimFOVFilled = false,
+    silentAimFOVOpacity = 0.2,
+    silentAimFOVColor = Color3.fromRGB(255, 182, 215),
+
+    silentAimPart = "Head",
+    silentAimClosestPart = false,
+
+    silentAimTeamCheck = false,
+    silentAimWallCheck = false,
+    knockCheck = false, -- ignore knocked / downed players
+    triggerBot = false,
+    triggerBotKey = Enum.KeyCode.T,
+    triggerBotDelay = 0.08, -- seconds between auto clicks
+    camlock = false,
+    camlockKey = Enum.KeyCode.V,
+    camlockSmooth = 0.25,
+    espBoxes = false,
+    espNames = false,
+    espHealth = false,
+    espColor = Color3.fromRGB(255, 112, 196),
+    silentAimMaxDist = 1000,
+
+    silentAimPredX = 0,
+    silentAimPredY = 0,
+
+    bypassRevolver = false,
+    device = "pc",
+}
+
+local whitelist = {} -- [UserId] = true
+
+local bodyPartsList = {
+    "Head", "UpperTorso", "HumanoidRootPart", "LowerTorso",
+    "LeftUpperArm", "RightUpperArm", "LeftLowerArm", "RightLowerArm",
+    "LeftHand", "RightHand", "LeftUpperLeg", "RightUpperLeg",
+    "LeftLowerLeg", "RightLowerLeg", "LeftFoot", "RightFoot"
+}
+
+local fovCircle
+pcall(function()
+    fovCircle = Drawing.new("Circle")
+    fovCircle.Thickness = 1.5
+    fovCircle.NumSides = 64
+    fovCircle.Radius = cfg.silentAimFOV
+    fovCircle.Color = cfg.silentAimFOVColor
+    fovCircle.Filled = cfg.silentAimFOVFilled
+    fovCircle.Visible = false
+    fovCircle.Transparency = 1
+end)
+
+local fovGuiCircle
+local function updateFovCircle(mousePos, show)
+    local radius = math.max(10, cfg.silentAimFOV)
+    if fovCircle then
+        fovCircle.Position = mousePos
+        fovCircle.Radius = radius
+        fovCircle.Color = cfg.silentAimFOVColor
+        fovCircle.Visible = show
+        fovCircle.Transparency = 1
+    end
+    if fovGuiCircle then
+        fovGuiCircle.Visible = show
+        fovGuiCircle.Size = UDim2.fromOffset(radius * 2, radius * 2)
+        fovGuiCircle.Position = UDim2.fromOffset(mousePos.X - radius, mousePos.Y - radius)
+        local stroke = fovGuiCircle:FindFirstChildOfClass("UIStroke")
+        if stroke then
+            stroke.Color = cfg.silentAimFOVColor
+        end
+    end
+end
+
+local silentAimCachedPart = nil
+local camlockPart = nil
+local lastTriggerClick = 0
+local triggerUi = nil
+local camlockUi = nil
+local espObjects = {}
+local espParent = nil
+
+local function clickMouse()
+    if typeof(mouse1click) == "function" then
+        mouse1click()
+        return true
+    end
+    local ok = pcall(function()
+        local vim = game:GetService("VirtualInputManager")
+        local pos
+        if cfg.device == "mob" then
+            local vs = cam.ViewportSize
+            pos = Vector2.new(vs.X / 2, vs.Y / 2)
+        else
+            pos = UIS:GetMouseLocation()
+        end
+        vim:SendMouseButtonEvent(pos.X, pos.Y, 0, true, game, 0)
+        task.delay(0.02, function()
+            vim:SendMouseButtonEvent(pos.X, pos.Y, 0, false, game, 0)
+        end)
+    end)
+    return ok
+end
+
+local function isHoldingRevolver()
+    if not cfg.bypassRevolver then return false end
+    local char = lp.Character
+    if not char then return false end
+    local tool = char:FindFirstChildOfClass("Tool")
+    if tool then
+        local toolName = string.lower(tool.Name)
+        if string.find(toolName, "revolver") or string.find(toolName, "rev") then
+            return true
+        end
+    end
+    return false
+end
+
+local function getAimPos()
+    if cfg.device == "mob" then
+        local vs = cam.ViewportSize
+        return Vector2.new(vs.X / 2, vs.Y / 2)
+    end
+    return UIS:GetMouseLocation()
+end
+
+local function getHum(p)
+    local c = p and p.Character
+    return c and c:FindFirstChildOfClass("Humanoid")
+end
+
+local function getHRP(p)
+    local c = p and p.Character
+    return c and c:FindFirstChild("HumanoidRootPart")
+end
+
+local function isAlive(p)
+    local h = getHum(p)
+    return h and h.Health > 0
+end
+
+local function isWhitelisted(p)
+    return p and whitelist[p.UserId] == true
+end
+
+local function sameTeam(p)
+    return lp.Team and p.Team and lp.Team == p.Team
+end
+
+-- True when the player is knocked / downed and should be ignored.
+-- Covers common FFA layouts: BodyEffects.K.O, Knocked bools, and a Knocked attribute.
+local function isKnocked(p)
+    local c = p and p.Character
+    if not c then return false end
+
+    if c:GetAttribute("Knocked") == true or c:GetAttribute("K.O") == true then
+        return true
+    end
+
+    local be = c:FindFirstChild("BodyEffects")
+    if be then
+        for _, name in ipairs({ "K.O", "KO", "Knocked", "Downed" }) do
+            local v = be:FindFirstChild(name)
+            if v and v:IsA("BoolValue") and v.Value == true then
+                return true
+            end
+        end
+    end
+
+    for _, name in ipairs({ "K.O", "KO", "Knocked", "Downed" }) do
+        local v = c:FindFirstChild(name)
+        if v and v:IsA("BoolValue") and v.Value == true then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function wallBetween(pos)
+    if not cfg.silentAimWallCheck then return false end
+    local ro = cam.CFrame.Position
+    local rd = pos - ro
+    local params = RaycastParams.new()
+    params.FilterDescendantsInstances = { lp.Character }
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    local hit = workspace:Raycast(ro, rd, params)
+    if not hit then return false end
+    for _, p in pairs(Players:GetPlayers()) do
+        if p.Character and hit.Instance:IsDescendantOf(p.Character) then return false end
+    end
+    return true
+end
+
+local function safeWorldToViewportPoint(pos)
+    local sp, on = Vector3.new(), false
+    pcall(function()
+        sp, on = cam:WorldToViewportPoint(pos)
+    end)
+    return sp, on
+end
+
+local function getClosestBodyPart(char)
+    local closestPart, shortestDist = nil, math.huge
+    local mousePos = getAimPos()
+    for _, pName in ipairs(bodyPartsList) do
+        local part = char:FindFirstChild(pName)
+        if part then
+            local screenPos, onScreen = safeWorldToViewportPoint(part.Position)
+            local dist = onScreen and (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude or math.huge
+            if dist < shortestDist then
+                shortestDist = dist
+                closestPart = part
+            end
+        end
+    end
+    return closestPart or char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+end
+
+local function getTargetPart(char)
+    if not char then return nil end
+    if cfg.silentAimClosestPart then
+        return getClosestBodyPart(char)
+    end
+    return char:FindFirstChild(cfg.silentAimPart) or char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+end
+
+local function getClosestPlayerToCursor()
+    if isHoldingRevolver() then return nil end
+
+    local closestPlayer = nil
+    local shortestDist = cfg.silentAimFOV
+    local mousePos = getAimPos()
+
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= lp and isAlive(p) then
+            if cfg.silentAimTeamCheck and sameTeam(p) then continue end
+            if isWhitelisted(p) then continue end
+            if cfg.knockCheck and isKnocked(p) then continue end
+            local hrp = getHRP(p)
+            if hrp then
+                local dist3D = (hrp.Position - cam.CFrame.Position).Magnitude
+                if dist3D <= cfg.silentAimMaxDist then
+                    local sp, onScreen = safeWorldToViewportPoint(hrp.Position)
+                    if onScreen then
+                        local dist2D = (Vector2.new(sp.X, sp.Y) - mousePos).Magnitude
+                        if dist2D < shortestDist then
+                            local part = getTargetPart(p.Character)
+                            if part and not wallBetween(part.Position) then
+                                shortestDist = dist2D
+                                closestPlayer = part
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return closestPlayer
+end
+
+local function clearEsp(p)
+    local pack = espObjects[p]
+    if not pack then return end
+    if pack.highlight then pack.highlight:Destroy() end
+    if pack.bill then pack.bill:Destroy() end
+    espObjects[p] = nil
+end
+
+local function updateEsp()
+    if not (cfg.espBoxes or cfg.espNames or cfg.espHealth) then
+        for p in pairs(espObjects) do
+            clearEsp(p)
+        end
+        return
+    end
+    local seen = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= lp and not isWhitelisted(p) and p.Character then
+            local char = p.Character
+            local hrp = char:FindFirstChild("HumanoidRootPart")
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if hrp and hum and hum.Health > 0 then
+                seen[p] = true
+                local pack = espObjects[p]
+                if not pack or pack.char ~= char then
+                    clearEsp(p)
+                    pack = { char = char }
+                    espObjects[p] = pack
+                end
+                if cfg.espBoxes then
+                    if not pack.highlight then
+                        local h = Instance.new("Highlight")
+                        h.Name = "CuteEsp"
+                        h.Adornee = char
+                        h.FillTransparency = 0.72
+                        h.OutlineTransparency = 0
+                        h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+                        h.Parent = espParent or CoreGui
+                        pack.highlight = h
+                    end
+                    pack.highlight.Enabled = true
+                    pack.highlight.FillColor = cfg.espColor
+                    pack.highlight.OutlineColor = cfg.espColor
+                elseif pack.highlight then
+                    pack.highlight.Enabled = false
+                end
+                if cfg.espNames or cfg.espHealth then
+                    if not pack.bill then
+                        local bb = Instance.new("BillboardGui")
+                        bb.Name = "CuteEspBill"
+                        bb.AlwaysOnTop = true
+                        bb.Size = UDim2.fromOffset(140, 40)
+                        bb.StudsOffset = Vector3.new(0, 3.4, 0)
+                        bb.Adornee = hrp
+                        bb.Parent = espParent or CoreGui
+                        local name = Instance.new("TextLabel", bb)
+                        name.BackgroundTransparency = 1
+                        name.Size = UDim2.new(1, 0, 0, 18)
+                        name.Font = Enum.Font.FredokaOne
+                        name.TextSize = 14
+                        name.TextStrokeTransparency = 0.55
+                        name.TextStrokeColor3 = Color3.fromRGB(255, 228, 240)
+                        local barBg = Instance.new("Frame", bb)
+                        barBg.BackgroundColor3 = Color3.fromRGB(255, 228, 240)
+                        barBg.Position = UDim2.new(0.18, 0, 0, 22)
+                        barBg.Size = UDim2.new(0.64, 0, 0, 7)
+                        barBg.BorderSizePixel = 0
+                        Instance.new("UICorner", barBg).CornerRadius = UDim.new(1, 0)
+                        local fill = Instance.new("Frame", barBg)
+                        fill.Size = UDim2.new(1, 0, 1, 0)
+                        fill.BorderSizePixel = 0
+                        Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
+                        pack.bill = bb
+                        pack.name = name
+                        pack.bar = barBg
+                        pack.fill = fill
+                    end
+                    pack.bill.Enabled = true
+                    pack.bill.Adornee = hrp
+                    pack.name.Visible = cfg.espNames
+                    pack.name.Text = "♡ " .. p.DisplayName
+                    pack.name.TextColor3 = cfg.espColor
+                    pack.bar.Visible = cfg.espHealth
+                    local ratio = hum.MaxHealth > 0 and math.clamp(hum.Health / hum.MaxHealth, 0, 1) or 0
+                    pack.fill.Size = UDim2.new(ratio, 0, 1, 0)
+                    pack.fill.BackgroundColor3 = cfg.espColor
+                elseif pack.bill then
+                    pack.bill.Enabled = false
+                end
+            end
+        end
+    end
+    for p in pairs(espObjects) do
+        if not seen[p] then
+            clearEsp(p)
+        end
+    end
+end
+
+Players.PlayerRemoving:Connect(function(p)
+    clearEsp(p)
+end)
+
+-- HOOK
+local _grm = getrawmetatable(game)
+local _oldIndex = _grm.__index
+setreadonly(_grm, false)
+
+_grm.__index = function(self, key)
+    if not checkcaller() and self == mouse and cfg.silentAim and not isHoldingRevolver() then
+        if (key == "Hit" or key == "Target" or key == "UnitRay") and silentAimCachedPart then
+            if math.random(1, 100) <= cfg.silentAimHitChance then
+                local origin = cam.CFrame.Position
+                local hitPos = silentAimCachedPart.Position + Vector3.new(
+                    silentAimCachedPart.AssemblyLinearVelocity.X * cfg.silentAimPredX,
+                    silentAimCachedPart.AssemblyLinearVelocity.Y * cfg.silentAimPredY,
+                    silentAimCachedPart.AssemblyLinearVelocity.Z * cfg.silentAimPredX
+                )
+                if key == "UnitRay" then
+                    return Ray.new(origin, (hitPos - origin).Unit)
+                elseif key == "Hit" then
+                    return CFrame.new(hitPos)
+                elseif key == "Target" then
+                    return silentAimCachedPart
+                end
+            end
+        end
+    end
+    return _oldIndex(self, key)
+end
+setreadonly(_grm, true)
+
+RunService.RenderStepped:Connect(function()
+    local mousePos = getAimPos()
+    updateFovCircle(mousePos, cfg.silentAimFOVShow and not isHoldingRevolver())
+
+    if cfg.silentAim or cfg.triggerBot or cfg.camlock then
+        silentAimCachedPart = getClosestPlayerToCursor()
+    else
+        silentAimCachedPart = nil
+    end
+
+    if cfg.camlock and not isHoldingRevolver() then
+        local lockedOk = camlockPart and camlockPart.Parent and camlockPart:IsDescendantOf(workspace)
+        if not lockedOk then
+            camlockPart = silentAimCachedPart
+        end
+        if camlockPart then
+            local goal = CFrame.lookAt(cam.CFrame.Position, camlockPart.Position)
+            local alpha = math.clamp(cfg.camlockSmooth, 0.01, 1)
+            cam.CFrame = cam.CFrame:Lerp(goal, alpha)
+        end
+    else
+        camlockPart = nil
+    end
+
+    if cfg.triggerBot and silentAimCachedPart and not isHoldingRevolver() then
+        local now = os.clock()
+        if now - lastTriggerClick >= cfg.triggerBotDelay then
+            lastTriggerClick = now
+            clickMouse()
+        end
+    end
+end)
+
+------------------------------------------------
+-- UI
+------------------------------------------------
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "AngelsDanFFA"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.IgnoreGuiInset = true
+
+local success = pcall(function()
+    ScreenGui.Parent = CoreGui
+end)
+
+if not success or not ScreenGui.Parent then
+    ScreenGui.Parent = lp:WaitForChild("PlayerGui")
+end
+espParent = ScreenGui
+RunService.RenderStepped:Connect(updateEsp)
+
+fovGuiCircle = Instance.new("Frame")
+fovGuiCircle.Name = "FovCircle"
+fovGuiCircle.AnchorPoint = Vector2.new(0, 0)
+fovGuiCircle.BackgroundTransparency = 1
+fovGuiCircle.BorderSizePixel = 0
+fovGuiCircle.Active = false
+fovGuiCircle.Visible = cfg.silentAimFOVShow
+fovGuiCircle.ZIndex = 20
+fovGuiCircle.Parent = ScreenGui
+Instance.new("UICorner", fovGuiCircle).CornerRadius = UDim.new(1, 0)
+local fovStroke = Instance.new("UIStroke", fovGuiCircle)
+fovStroke.Color = cfg.silentAimFOVColor
+fovStroke.Thickness = 2
+fovStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+
+local Main = Instance.new("Frame")
+Main.Name = "Main"
+Main.ClipsDescendants = true
+Main.Size = UDim2.new(0, 480, 0, 575)
+Main.Position = UDim2.new(0.5, -240, 0.5, -287)
+Main.BackgroundColor3 = Color3.fromRGB(255, 240, 250)
+Main.BorderSizePixel = 0
+Main.Active = true
+Main.Visible = false
+Main.Parent = ScreenGui
+
+-- Dragging
+local dragging, dragInput, dragStart, startPos
+local Header
+
+-- drag is bound for every panel at the end of the script
+
+local UICorner = Instance.new("UICorner", Main)
+UICorner.CornerRadius = UDim.new(0, 22)
+
+local UIStroke = Instance.new("UIStroke", Main)
+UIStroke.Color = Color3.fromRGB(255, 170, 220)
+UIStroke.Thickness = 2.5
+
+-- Header
+Header = Instance.new("Frame", Main)
+Header.Name = "Header"
+Header.Size = UDim2.new(1, 0, 0, 52)
+Header.BackgroundTransparency = 1
+
+local Title = Instance.new("TextLabel", Header)
+Title.Size = UDim2.new(1, -50, 1, 0)
+Title.Position = UDim2.new(0, 18, 0, 0)
+Title.BackgroundTransparency = 1
+Title.Text = "♡ angels dan ffa ♡"
+Title.TextColor3 = Color3.fromRGB(220, 90, 160)
+Title.TextSize = 18
+Title.Font = Enum.Font.FredokaOne
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.TextYAlignment = Enum.TextYAlignment.Center
+Title.TextStrokeTransparency = 0.75
+Title.TextStrokeColor3 = Color3.fromRGB(255, 255, 255)
+
+local Subtitle = Instance.new("TextLabel", Header)
+Subtitle.Size = UDim2.new(1, -60, 0, 16)
+Subtitle.Position = UDim2.new(0, 20, 1, -18)
+Subtitle.BackgroundTransparency = 1
+Subtitle.Text = "⋆ ˚｡⋆ little melody menu ⋆ ˚｡⋆"
+Subtitle.TextColor3 = Color3.fromRGB(200, 140, 180)
+Subtitle.Font = Enum.Font.FredokaOne
+Subtitle.TextSize = 11
+Subtitle.TextXAlignment = Enum.TextXAlignment.Left
+
+local Device = Instance.new("Frame")
+Device.Name = "DevicePick"
+Device.Size = UDim2.new(0, 340, 0, 250)
+Device.Position = UDim2.new(0.5, -170, 0.5, -125)
+Device.BackgroundColor3 = Color3.fromRGB(255, 240, 250)
+Device.BorderSizePixel = 0
+Device.Active = true
+Device.Parent = ScreenGui
+Instance.new("UICorner", Device).CornerRadius = UDim.new(0, 22)
+local deviceStroke = Instance.new("UIStroke", Device)
+deviceStroke.Color = Color3.fromRGB(255, 170, 220)
+deviceStroke.Thickness = 2.5
+
+local dTitle = Instance.new("TextLabel", Device)
+dTitle.Size = UDim2.new(1, -24, 0, 32)
+dTitle.Position = UDim2.new(0, 16, 0, 16)
+dTitle.BackgroundTransparency = 1
+dTitle.Text = "♡ choose device ♡"
+dTitle.TextColor3 = Color3.fromRGB(220, 90, 160)
+dTitle.Font = Enum.Font.FredokaOne
+dTitle.TextSize = 22
+dTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+local dSub = Instance.new("TextLabel", Device)
+dSub.Size = UDim2.new(1, -24, 0, 18)
+dSub.Position = UDim2.new(0, 16, 0, 48)
+dSub.BackgroundTransparency = 1
+dSub.Text = "⋆ pick pc or mob ⋆"
+dSub.TextColor3 = Color3.fromRGB(214, 140, 180)
+dSub.Font = Enum.Font.FredokaOne
+dSub.TextSize = 13
+dSub.TextXAlignment = Enum.TextXAlignment.Left
+
+local function makeDeviceButton(text, sub, y)
+    local btn = Instance.new("TextButton", Device)
+    btn.Size = UDim2.new(1, -32, 0, 64)
+    btn.Position = UDim2.new(0, 16, 0, y)
+    btn.BackgroundColor3 = Color3.fromRGB(255, 248, 253)
+    btn.Text = ""
+    btn.AutoButtonColor = false
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 16)
+    local s = Instance.new("UIStroke", btn)
+    s.Color = Color3.fromRGB(255, 190, 225)
+    s.Thickness = 1.4
+
+    local name = Instance.new("TextLabel", btn)
+    name.Size = UDim2.new(1, -20, 0, 24)
+    name.Position = UDim2.new(0, 14, 0, 8)
+    name.BackgroundTransparency = 1
+    name.Text = text
+    name.TextColor3 = Color3.fromRGB(220, 90, 160)
+    name.Font = Enum.Font.FredokaOne
+    name.TextSize = 18
+    name.TextXAlignment = Enum.TextXAlignment.Left
+
+    local hint = Instance.new("TextLabel", btn)
+    hint.Size = UDim2.new(1, -20, 0, 18)
+    hint.Position = UDim2.new(0, 14, 0, 34)
+    hint.BackgroundTransparency = 1
+    hint.Text = sub
+    hint.TextColor3 = Color3.fromRGB(214, 140, 180)
+    hint.Font = Enum.Font.FredokaOne
+    hint.TextSize = 12
+    hint.TextXAlignment = Enum.TextXAlignment.Left
+    return btn
+end
+
+local pcBtn = makeDeviceButton("♡ pc", "⋆ cursor fov + outfit copy ⋆", 82)
+local mobBtn = makeDeviceButton("♡ mob", "⋆ fov stays in the middle ⋆", 158)
+
+local function pickDevice(mode)
+    cfg.device = mode
+    Device.Visible = false
+    if mode == "mob" then
+        Main.Size = UDim2.fromOffset(300, 420)
+        Main.Position = UDim2.new(0.5, -150, 0.5, -210)
+        Title.TextSize = 16
+        if White then
+            White.Size = UDim2.fromOffset(280, 340)
+            White.Position = UDim2.new(0.5, -140, 0.55, -150)
+        end
+    else
+        Main.Size = UDim2.fromOffset(480, 575)
+        Main.Position = UDim2.new(0.5, -240, 0.5, -287)
+        Title.TextSize = 18
+        if White then
+            White.Size = UDim2.fromOffset(340, 460)
+            White.Position = UDim2.new(0.5, 250, 0.5, -230)
+        end
+    end
+    Main.Visible = true
+    Subtitle.Text = mode == "mob" and "⋆ ˚｡⋆ mob · middle fov ⋆ ˚｡⋆" or "⋆ ˚｡⋆ little melody menu ⋆ ˚｡⋆"
+end
+
+pcBtn.MouseButton1Click:Connect(function()
+    pickDevice("pc")
+end)
+mobBtn.MouseButton1Click:Connect(function()
+    pickDevice("mob")
+end)
+
+local MinimizeBtn = Instance.new("TextButton", Header)
+MinimizeBtn.Size = UDim2.new(0, 28, 0, 28)
+MinimizeBtn.Position = UDim2.new(1, -38, 0.5, -14)
+MinimizeBtn.BackgroundColor3 = Color3.fromRGB(255, 200, 230)
+MinimizeBtn.Text = "−"
+MinimizeBtn.TextColor3 = Color3.fromRGB(220, 80, 150)
+MinimizeBtn.Font = Enum.Font.FredokaOne
+MinimizeBtn.TextSize = 18
+MinimizeBtn.AutoButtonColor = false
+
+Instance.new("UICorner", MinimizeBtn).CornerRadius = UDim.new(0, 10)
+
+-- Mini Bubble
+local MiniBubble = Instance.new("TextButton", ScreenGui)
+MiniBubble.Name = "MiniBubble"
+MiniBubble.Size = UDim2.new(0, 50, 0, 50)
+MiniBubble.Position = UDim2.new(0.5, -25, 0.5, -25)
+MiniBubble.BackgroundColor3 = Color3.fromRGB(255, 230, 245)
+MiniBubble.Text = "🪽"
+MiniBubble.TextSize = 22
+MiniBubble.Visible = false
+MiniBubble.Active = true
+
+local bDragging, bDragStart, bStartPos
+-- bubble drag is included in the shared drag below
+
+Instance.new("UICorner", MiniBubble).CornerRadius = UDim.new(1, 0)
+
+local BubbleStroke = Instance.new("UIStroke", MiniBubble)
+BubbleStroke.Color = Color3.fromRGB(255, 160, 210)
+BubbleStroke.Thickness = 2.2
+
+-- Scroll
+local Scroll = Instance.new("ScrollingFrame", Main)
+Scroll.Size = UDim2.new(1, -24, 1, -62)
+Scroll.Position = UDim2.new(0, 12, 0, 52)
+Scroll.BackgroundTransparency = 1
+Scroll.BorderSizePixel = 0
+Scroll.ScrollBarThickness = 6
+Scroll.ScrollBarImageColor3 = Color3.fromRGB(255, 170, 215)
+Scroll.ScrollingEnabled = true
+Scroll.Active = true
+Scroll.ElasticBehavior = Enum.ElasticBehavior.Never
+Scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+
+Scroll.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.MouseWheel then
+        dragging = false
+    end
+end)
+
+local UIList = Instance.new("UIListLayout", Scroll)
+UIList.SortOrder = Enum.SortOrder.LayoutOrder
+UIList.Padding = UDim.new(0, 11)
+
+UIList:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    Scroll.CanvasSize = UDim2.new(0, 0, 0, UIList.AbsoluteContentSize.Y + 12)
+end)
+
+local function minimizeUI()
+    local x = math.clamp(Main.AbsolutePosition.X + (Main.AbsoluteSize.X / 2) - 25, 0, cam.ViewportSize.X - 50)
+    local y = math.clamp(Main.AbsolutePosition.Y + (Main.AbsoluteSize.Y / 2) - 25, 0, cam.ViewportSize.Y - 50)
+    MiniBubble.Position = UDim2.new(0, x, 0, y)
+    Main.Visible = false
+    MiniBubble.Visible = true
+end
+
+local function restoreUI()
+    local x = math.clamp(MiniBubble.AbsolutePosition.X - (Main.AbsoluteSize.X / 2) + 25, 0, cam.ViewportSize.X - Main.AbsoluteSize.X)
+    local y = math.clamp(MiniBubble.AbsolutePosition.Y - (Main.AbsoluteSize.Y / 2) + 25, 0, cam.ViewportSize.Y - Main.AbsoluteSize.Y)
+    Main.Position = UDim2.new(0, x, 0, y)
+    MiniBubble.Visible = false
+    Main.Visible = true
+end
+
+MinimizeBtn.MouseButton1Click:Connect(minimizeUI)
+MiniBubble.MouseButton1Click:Connect(restoreUI)
+
+-- Helpers
+local function createCard(height)
+    local card = Instance.new("Frame")
+    card.Size = UDim2.new(1, -8, 0, height or 42)
+    card.BackgroundColor3 = Color3.fromRGB(255, 248, 253)
+    card.BorderSizePixel = 0
+    card.Parent = Scroll
+
+    Instance.new("UICorner", card).CornerRadius = UDim.new(0, 14)
+
+    local s = Instance.new("UIStroke", card)
+    s.Color = Color3.fromRGB(255, 210, 235)
+    s.Thickness = 1.2
+    return card
+end
+
+local function addToggle(text, default, callback, subtitle)
+    local card = createCard(subtitle and 52 or 42)
+    local lbl = Instance.new("TextLabel", card)
+    lbl.Size = UDim2.new(0.7, 0, subtitle and 0 or 1, subtitle and 22 or 0)
+    lbl.Position = UDim2.new(0, 12, 0, subtitle and 6 or 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = text
+    lbl.TextColor3 = Color3.fromRGB(200, 80, 150)
+    lbl.Font = Enum.Font.FredokaOne
+    lbl.TextSize = 14
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+
+    if subtitle then
+        local sub = Instance.new("TextLabel", card)
+        sub.Size = UDim2.new(0.7, 0, 0, 16)
+        sub.Position = UDim2.new(0, 12, 0, 28)
+        sub.BackgroundTransparency = 1
+        sub.Text = "♡ " .. subtitle
+        sub.TextColor3 = Color3.fromRGB(214, 130, 176)
+        sub.Font = Enum.Font.FredokaOne
+        sub.TextSize = 11
+        sub.TextXAlignment = Enum.TextXAlignment.Left
+    end
+
+    local btn = Instance.new("TextButton", card)
+    btn.Size = UDim2.new(0, 46, 0, 24)
+    btn.Position = UDim2.new(1, -56, 0.5, -12)
+    btn.BackgroundColor3 = default and Color3.fromRGB(255, 140, 200) or Color3.fromRGB(250, 230, 245)
+    btn.Text = ""
+    btn.AutoButtonColor = false
+
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(1, 0)
+
+    local circle = Instance.new("Frame", btn)
+    circle.Size = UDim2.new(0, 20, 0, 20)
+    circle.Position = default and UDim2.new(1, -22, 0.5, -10) or UDim2.new(0, 2, 0.5, -10)
+    circle.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+
+    Instance.new("UICorner", circle).CornerRadius = UDim.new(1, 0)
+
+    local state = default
+    btn.MouseButton1Click:Connect(function()
+        state = not state
+        btn.BackgroundColor3 = state and Color3.fromRGB(255, 140, 200) or Color3.fromRGB(250, 230, 245)
+        circle:TweenPosition(state and UDim2.new(1, -22, 0.5, -10) or UDim2.new(0, 2, 0.5, -10), Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.15, true)
+        callback(state)
+    end)
+end
+
+local function addSlider(text, min, max, default, callback)
+    local card = createCard(52)
+
+    local lbl = Instance.new("TextLabel", card)
+    lbl.Size = UDim2.new(0.6, 0, 0, 20)
+    lbl.Position = UDim2.new(0, 12, 0, 5)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = text
+    lbl.TextColor3 = Color3.fromRGB(200, 80, 150)
+    lbl.Font = Enum.Font.FredokaOne
+    lbl.TextSize = 14
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+
+    local valLbl = Instance.new("TextLabel", card)
+    valLbl.Size = UDim2.new(0.3, 0, 0, 20)
+    valLbl.Position = UDim2.new(0.7, -10, 0, 5)
+    valLbl.BackgroundTransparency = 1
+    valLbl.Text = tostring(default)
+    valLbl.TextColor3 = Color3.fromRGB(210, 120, 170)
+    valLbl.Font = Enum.Font.SourceSans
+    valLbl.TextSize = 14
+    valLbl.TextXAlignment = Enum.TextXAlignment.Right
+
+    local bg = Instance.new("Frame", card)
+    bg.Size = UDim2.new(1, -24, 0, 9)
+    bg.Position = UDim2.new(0, 12, 0, 32)
+    bg.BackgroundColor3 = Color3.fromRGB(255, 225, 240)
+    Instance.new("UICorner", bg).CornerRadius = UDim.new(1, 0)
+
+    local fill = Instance.new("Frame", bg)
+    fill.Size = UDim2.new((default - min) / (max - min), 0, 1, 0)
+    fill.BackgroundColor3 = Color3.fromRGB(255, 140, 200)
+    Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
+
+    local sDragging = false
+    local function update(input)
+        local pos = math.clamp((input.Position.X - bg.AbsolutePosition.X) / bg.AbsoluteSize.X, 0, 1)
+        local val = math.floor(min + (max - min) * pos)
+        fill.Size = UDim2.new(pos, 0, 1, 0)
+        valLbl.Text = tostring(val)
+        callback(val)
+    end
+
+    bg.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            sDragging = true
+            update(input)
+        end
+    end)
+
+    UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            sDragging = false
+        end
+    end)
+
+    UIS.InputChanged:Connect(function(input)
+        if sDragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            update(input)
+        end
+    end)
+end
+
+local function addDropdown(text, list, default, callback)
+    local card = createCard(42)
+
+    local lbl = Instance.new("TextLabel", card)
+    lbl.Size = UDim2.new(0.4, 0, 1, 0)
+    lbl.Position = UDim2.new(0, 12, 0, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = text
+    lbl.TextColor3 = Color3.fromRGB(200, 80, 150)
+    lbl.Font = Enum.Font.FredokaOne
+    lbl.TextSize = 14
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+
+    local btn = Instance.new("TextButton", card)
+    btn.Size = UDim2.new(0.55, 0, 0, 28)
+    btn.Position = UDim2.new(0.42, 0, 0.5, -14)
+    btn.BackgroundColor3 = Color3.fromRGB(255, 230, 245)
+    btn.Text = default
+    btn.TextColor3 = Color3.fromRGB(100, 140, 160)
+    btn.Font = Enum.Font.SourceSans
+    btn.TextSize = 14
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
+
+    local s = Instance.new("UIStroke", btn)
+    s.Color = Color3.fromRGB(255, 190, 225)
+
+    local dropFrame = Instance.new("ScrollingFrame", Scroll)
+    dropFrame.Size = UDim2.new(1, -6, 0, 120)
+    dropFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    dropFrame.Visible = false
+    dropFrame.BorderSizePixel = 0
+    dropFrame.ScrollBarThickness = 3
+    Instance.new("UICorner", dropFrame).CornerRadius = UDim.new(0, 10)
+
+    local dList = Instance.new("UIListLayout", dropFrame)
+    dList.SortOrder = Enum.SortOrder.LayoutOrder
+
+    dList:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        dropFrame.CanvasSize = UDim2.new(0, 0, 0, dList.AbsoluteContentSize.Y)
+    end)
+
+    for _, v in ipairs(list) do
+        local item = Instance.new("TextButton", dropFrame)
+        item.Size = UDim2.new(1, 0, 0, 26)
+        item.BackgroundTransparency = 1
+        item.Text = v
+        item.TextColor3 = Color3.fromRGB(210, 70, 150)
+        item.Font = Enum.Font.SourceSans
+        item.TextSize = 13
+
+        item.MouseButton1Click:Connect(function()
+            btn.Text = v
+            dropFrame.Visible = false
+            callback(v)
+        end)
+    end
+
+    btn.MouseButton1Click:Connect(function()
+        dropFrame.Visible = not dropFrame.Visible
+    end)
+end
+
+local function addKeybind(text, defaultKey, callback)
+    local card = createCard(42)
+    local lbl = Instance.new("TextLabel", card)
+    lbl.Size = UDim2.new(0.6, 0, 1, 0)
+    lbl.Position = UDim2.new(0, 12, 0, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = text
+    lbl.TextColor3 = Color3.fromRGB(200, 80, 150)
+    lbl.Font = Enum.Font.FredokaOne
+    lbl.TextSize = 14
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+
+    local btn = Instance.new("TextButton", card)
+    btn.Size = UDim2.new(0, 84, 0, 26)
+    btn.Position = UDim2.new(1, -94, 0.5, -13)
+    btn.BackgroundColor3 = Color3.fromRGB(255, 230, 245)
+    btn.Text = defaultKey.Name
+    btn.TextColor3 = Color3.fromRGB(100, 140, 160)
+    btn.Font = Enum.Font.SourceSansBold
+    btn.TextSize = 12
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
+
+    local s = Instance.new("UIStroke", btn)
+    s.Color = Color3.fromRGB(255, 190, 225)
+
+    local listening = false
+    btn.MouseButton1Click:Connect(function()
+        listening = true
+        btn.Text = "..."
+    end)
+
+    UIS.InputBegan:Connect(function(input, gpe)
+        if listening and not gpe and input.UserInputType == Enum.UserInputType.Keyboard then
+            listening = false
+            btn.Text = input.KeyCode.Name
+            callback(input.KeyCode)
+        end
+    end)
+end
+
+local function addFOVColorPicker()
+    local card = createCard(58)
+
+    local title = Instance.new("TextLabel", card)
+    title.Size = UDim2.new(1, -20, 0, 22)
+    title.Position = UDim2.new(0, 12, 0, 4)
+    title.BackgroundTransparency = 1
+    title.Text = "♡ fov color"
+    title.Font = Enum.Font.FredokaOne
+    title.TextSize = 14
+    title.TextXAlignment = Enum.TextXAlignment.Left
+
+    local colors = {
+        Color3.fromRGB(235, 64, 64),
+        Color3.fromRGB(255, 149, 48),
+        Color3.fromRGB(255, 214, 48),
+        Color3.fromRGB(92, 214, 92),
+        Color3.fromRGB(48, 214, 214),
+        Color3.fromRGB(72, 112, 255),
+        Color3.fromRGB(168, 92, 255),
+        Color3.fromRGB(255, 112, 196),
+        Color3.fromRGB(24, 24, 28),
+    }
+
+    local row = Instance.new("Frame", card)
+    row.Size = UDim2.new(1, -20, 0, 22)
+    row.Position = UDim2.new(0, 10, 0, 28)
+    row.BackgroundTransparency = 1
+
+    local layout = Instance.new("UIListLayout", row)
+    layout.FillDirection = Enum.FillDirection.Horizontal
+    layout.Padding = UDim.new(0, 6)
+    layout.VerticalAlignment = Enum.VerticalAlignment.Center
+
+    local swatches = {}
+    local function paintSelection()
+        for _, sw in ipairs(swatches) do
+            sw.stroke.Enabled = sw.color == cfg.silentAimFOVColor
+            sw.stroke.Color = Color3.fromRGB(255, 255, 255)
+            sw.stroke.Thickness = 2
+        end
+    end
+
+    for _, color in ipairs(colors) do
+        local sw = Instance.new("TextButton", row)
+        sw.Size = UDim2.new(0, 18, 0, 18)
+        sw.BackgroundColor3 = color
+        sw.Text = ""
+        sw.AutoButtonColor = false
+        Instance.new("UICorner", sw).CornerRadius = UDim.new(0, 4)
+        local stroke = Instance.new("UIStroke", sw)
+        stroke.Enabled = false
+        swatches[#swatches + 1] = { color = color, stroke = stroke }
+        sw.MouseButton1Click:Connect(function()
+            cfg.silentAimFOVColor = color
+            paintSelection()
+        end)
+    end
+    paintSelection()
+end
+
+local function addSection(title, sub)
+    local holder = Instance.new("Frame")
+    holder.Size = UDim2.new(1, -8, 0, sub and 34 or 18)
+    holder.BackgroundTransparency = 1
+    holder.Parent = Scroll
+
+    local dot = Instance.new("TextLabel", holder)
+    dot.Size = UDim2.new(1, -8, 0, 16)
+    dot.Position = UDim2.new(0, 4, 0, 0)
+    dot.BackgroundTransparency = 1
+    dot.Text = "♡  " .. title
+    dot.TextColor3 = Color3.fromRGB(220, 90, 160)
+    dot.Font = Enum.Font.FredokaOne
+    dot.TextSize = 15
+    dot.TextXAlignment = Enum.TextXAlignment.Left
+
+    if sub then
+        local subLbl = Instance.new("TextLabel", holder)
+        subLbl.Size = UDim2.new(1, -8, 0, 14)
+        subLbl.Position = UDim2.new(0, 16, 0, 16)
+        subLbl.BackgroundTransparency = 1
+        subLbl.Text = "⋆ " .. sub .. " ⋆"
+        subLbl.TextColor3 = Color3.fromRGB(214, 140, 180)
+        subLbl.Font = Enum.Font.FredokaOne
+        subLbl.TextSize = 11
+        subLbl.TextXAlignment = Enum.TextXAlignment.Left
+    end
+end
+
+-- Add all controls
+addToggle("♡ silent aim", cfg.silentAim, function(v) cfg.silentAim = v end)
+addToggle("♡ show fov circle", cfg.silentAimFOVShow, function(v) cfg.silentAimFOVShow = v end)
+addSlider("♡ fov size", 10, 500, cfg.silentAimFOV, function(v) cfg.silentAimFOV = v end)
+
+addFOVColorPicker()
+
+addSection("visuals", "esp & overlays")
+addToggle("♡ esp boxes", cfg.espBoxes, function(v) cfg.espBoxes = v end, "boxes through walls")
+addToggle("♡ esp names", cfg.espNames, function(v) cfg.espNames = v end, "show display names")
+addToggle("♡ esp health", cfg.espHealth, function(v) cfg.espHealth = v end, "health bar next to player")
+
+do
+    local card = createCard(58)
+    local title = Instance.new("TextLabel", card)
+    title.Size = UDim2.new(1, -20, 0, 22)
+    title.Position = UDim2.new(0, 12, 0, 4)
+    title.BackgroundTransparency = 1
+    title.Text = "♡ esp color"
+    title.TextColor3 = Color3.fromRGB(200, 80, 150)
+    title.Font = Enum.Font.FredokaOne
+    title.TextSize = 15
+    title.TextXAlignment = Enum.TextXAlignment.Left
+
+    local colors = {
+        Color3.fromRGB(235, 64, 64),
+        Color3.fromRGB(255, 149, 48),
+        Color3.fromRGB(255, 214, 48),
+        Color3.fromRGB(92, 214, 92),
+        Color3.fromRGB(48, 214, 214),
+        Color3.fromRGB(72, 112, 255),
+        Color3.fromRGB(168, 92, 255),
+        Color3.fromRGB(255, 112, 196),
+        Color3.fromRGB(24, 24, 28),
+    }
+    local row = Instance.new("Frame", card)
+    row.Size = UDim2.new(1, -20, 0, 22)
+    row.Position = UDim2.new(0, 10, 0, 28)
+    row.BackgroundTransparency = 1
+    local layout = Instance.new("UIListLayout", row)
+    layout.FillDirection = Enum.FillDirection.Horizontal
+    layout.Padding = UDim.new(0, 6)
+    local swatches = {}
+    local function paintSelection()
+        for _, sw in ipairs(swatches) do
+            sw.stroke.Enabled = sw.color == cfg.espColor
+            sw.stroke.Color = Color3.fromRGB(255, 255, 255)
+            sw.stroke.Thickness = 2
+        end
+    end
+    for _, color in ipairs(colors) do
+        local sw = Instance.new("TextButton", row)
+        sw.Size = UDim2.new(0, 18, 0, 18)
+        sw.BackgroundColor3 = color
+        sw.Text = ""
+        sw.AutoButtonColor = false
+        Instance.new("UICorner", sw).CornerRadius = UDim.new(0, 4)
+        local stroke = Instance.new("UIStroke", sw)
+        stroke.Enabled = false
+        swatches[#swatches + 1] = { color = color, stroke = stroke }
+        sw.MouseButton1Click:Connect(function()
+            cfg.espColor = color
+            paintSelection()
+        end)
+    end
+    paintSelection()
+end
+
+addSection("camlock", "camera assist")
+addToggle("♡ camlock", cfg.camlock, function(v)
+    cfg.camlock = v
+    if not v then
+        camlockPart = nil
+    end
+end, "sticky camera lock")
+
+do
+    local smoothLbl = Instance.new("TextLabel")
+    smoothLbl.Size = UDim2.new(1, -8, 0, 16)
+    smoothLbl.BackgroundTransparency = 1
+    smoothLbl.Text = "·  smoothness :: " .. string.format("%.2f", cfg.camlockSmooth)
+    smoothLbl.TextColor3 = Color3.fromRGB(255, 140, 190)
+    smoothLbl.Font = Enum.Font.GothamMedium
+    smoothLbl.TextSize = 12
+    smoothLbl.TextXAlignment = Enum.TextXAlignment.Left
+    smoothLbl.Parent = Scroll
+
+    local card = createCard(58)
+    local title = Instance.new("TextLabel", card)
+    title.Size = UDim2.new(0.6, 0, 0, 18)
+    title.Position = UDim2.new(0, 12, 0, 6)
+    title.BackgroundTransparency = 1
+    title.Text = "♡ smoothness"
+    title.TextColor3 = Color3.fromRGB(196, 72, 138)
+    title.Font = Enum.Font.GothamBold
+    title.TextSize = 14
+    title.TextXAlignment = Enum.TextXAlignment.Left
+
+    local valLbl = Instance.new("TextLabel", card)
+    valLbl.Size = UDim2.new(0.5, 0, 0, 16)
+    valLbl.Position = UDim2.new(0, 12, 0, 24)
+    valLbl.BackgroundTransparency = 1
+    valLbl.Text = string.format("%.2f", cfg.camlockSmooth)
+    valLbl.TextColor3 = Color3.fromRGB(255, 140, 190)
+    valLbl.Font = Enum.Font.GothamMedium
+    valLbl.TextSize = 13
+    valLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+    local bg = Instance.new("Frame", card)
+    bg.Size = UDim2.new(1, -24, 0, 6)
+    bg.Position = UDim2.new(0, 12, 0, 44)
+    bg.BackgroundColor3 = Color3.fromRGB(255, 214, 232)
+    Instance.new("UICorner", bg).CornerRadius = UDim.new(1, 0)
+
+    local fill = Instance.new("Frame", bg)
+    fill.Size = UDim2.new(cfg.camlockSmooth, 0, 1, 0)
+    fill.BackgroundColor3 = Color3.fromRGB(255, 176, 210)
+    Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
+
+    local sDragging = false
+    local function update(input)
+        local pos = math.clamp((input.Position.X - bg.AbsolutePosition.X) / bg.AbsoluteSize.X, 0, 1)
+        local val = math.floor(pos * 100 + 0.5) / 100
+        if val < 0.01 then val = 0.01 end
+        cfg.camlockSmooth = val
+        fill.Size = UDim2.new(val, 0, 1, 0)
+        valLbl.Text = string.format("%.2f", val)
+        smoothLbl.Text = "·  smoothness :: " .. string.format("%.2f", val)
+    end
+    bg.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            sDragging = true
+            update(input)
+        end
+    end)
+    UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            sDragging = false
+        end
+    end)
+    UIS.InputChanged:Connect(function(input)
+        if sDragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            update(input)
+        end
+    end)
+end
+
+do
+    local card = createCard(42)
+    local lbl = Instance.new("TextLabel", card)
+    lbl.Size = UDim2.new(0.5, 0, 1, 0)
+    lbl.Position = UDim2.new(0, 12, 0, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = "♡ keybind"
+    lbl.TextColor3 = Color3.fromRGB(196, 72, 138)
+    lbl.Font = Enum.Font.GothamMedium
+    lbl.TextSize = 14
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+
+    local btn = Instance.new("TextButton", card)
+    btn.Size = UDim2.new(0, 72, 0, 26)
+    btn.Position = UDim2.new(1, -84, 0.5, -13)
+    btn.BackgroundColor3 = Color3.fromRGB(255, 228, 240)
+    btn.Text = cfg.camlockKey.Name
+    btn.TextColor3 = Color3.fromRGB(255, 150, 196)
+    btn.Font = Enum.Font.GothamMedium
+    btn.TextSize = 13
+    btn.AutoButtonColor = false
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
+
+    local listening = false
+    btn.MouseButton1Click:Connect(function()
+        listening = true
+        btn.Text = "..."
+    end)
+
+    camlockUi = {
+        set = function(state)
+            cfg.camlock = state
+            if not state then
+                camlockPart = nil
+            end
+        end,
+        setKey = function(key)
+            cfg.camlockKey = key
+            btn.Text = key.Name
+            listening = false
+        end,
+        isListening = function()
+            return listening
+        end,
+    }
+end
+
+addToggle("♡ skip revolver", cfg.bypassRevolver, function(v) cfg.bypassRevolver = v end)
+addToggle("♡ wall check", cfg.silentAimWallCheck, function(v) cfg.silentAimWallCheck = v end)
+addToggle("♡ knock check", cfg.knockCheck, function(v) cfg.knockCheck = v end, "ignore knocked players")
+
+do
+    local card = createCard(64)
+    local lbl = Instance.new("TextLabel", card)
+    lbl.Size = UDim2.new(0.7, 0, 0, 20)
+    lbl.Position = UDim2.new(0, 12, 0, 6)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = "♡ triggerbot"
+    lbl.TextColor3 = Color3.fromRGB(200, 80, 150)
+    lbl.Font = Enum.Font.FredokaOne
+    lbl.TextSize = 14
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+
+    local sub = Instance.new("TextLabel", card)
+    sub.Size = UDim2.new(0.7, 0, 0, 14)
+    sub.Position = UDim2.new(0, 12, 0, 26)
+    sub.BackgroundTransparency = 1
+    sub.Text = "♡ auto click on target"
+    sub.TextColor3 = Color3.fromRGB(180, 110, 160)
+    sub.Font = Enum.Font.Gotham
+    sub.TextSize = 11
+    sub.TextXAlignment = Enum.TextXAlignment.Left
+
+    local keyLbl = Instance.new("TextButton", card)
+    keyLbl.Size = UDim2.new(0.7, 0, 0, 14)
+    keyLbl.Position = UDim2.new(0, 12, 0, 42)
+    keyLbl.BackgroundTransparency = 1
+    keyLbl.Text = "key: " .. cfg.triggerBotKey.Name
+    keyLbl.TextColor3 = Color3.fromRGB(170, 100, 150)
+    keyLbl.Font = Enum.Font.Gotham
+    keyLbl.TextSize = 11
+    keyLbl.TextXAlignment = Enum.TextXAlignment.Left
+    keyLbl.AutoButtonColor = false
+
+    local btn = Instance.new("TextButton", card)
+    btn.Size = UDim2.new(0, 46, 0, 24)
+    btn.Position = UDim2.new(1, -56, 0.5, -12)
+    btn.BackgroundColor3 = cfg.triggerBot and Color3.fromRGB(255, 140, 200) or Color3.fromRGB(250, 230, 245)
+    btn.Text = ""
+    btn.AutoButtonColor = false
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(1, 0)
+
+    local circle = Instance.new("Frame", btn)
+    circle.Size = UDim2.new(0, 20, 0, 20)
+    circle.Position = cfg.triggerBot and UDim2.new(1, -22, 0.5, -10) or UDim2.new(0, 2, 0.5, -10)
+    circle.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    Instance.new("UICorner", circle).CornerRadius = UDim.new(1, 0)
+
+    local listening = false
+
+    local function setTrigger(state)
+        cfg.triggerBot = state
+        btn.BackgroundColor3 = state and Color3.fromRGB(255, 140, 200) or Color3.fromRGB(250, 230, 245)
+        circle:TweenPosition(state and UDim2.new(1, -22, 0.5, -10) or UDim2.new(0, 2, 0.5, -10), Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.15, true)
+    end
+
+    btn.MouseButton1Click:Connect(function()
+        setTrigger(not cfg.triggerBot)
+    end)
+
+    keyLbl.MouseButton1Click:Connect(function()
+        listening = true
+        keyLbl.Text = "key: ..."
+    end)
+
+    triggerUi = {
+        set = setTrigger,
+        setKey = function(key)
+            cfg.triggerBotKey = key
+            keyLbl.Text = "key: " .. key.Name
+            listening = false
+        end,
+        isListening = function()
+            return listening
+        end,
+    }
+end
+
+addToggle("♡ closest part", cfg.silentAimClosestPart, function(v) cfg.silentAimClosestPart = v end)
+addDropdown("♡ hit part", bodyPartsList, cfg.silentAimPart, function(v) cfg.silentAimPart = v end)
+addToggle("♡ use keybind", cfg.useKeybind, function(v) cfg.useKeybind = v end)
+addKeybind("♡ aim key", cfg.silentAimKey, function(v) cfg.silentAimKey = v end)
+addKeybind("♡ hide menu key", cfg.uiToggleKey, function(v) cfg.uiToggleKey = v end)
+
+-- Whitelist menu
+White = Instance.new("Frame")
+White.Name = "Whitelist"
+White.Size = UDim2.new(0, 340, 0, 460)
+White.Position = UDim2.new(0.5, 250, 0.5, -230)
+White.BackgroundColor3 = Color3.fromRGB(255, 236, 246)
+White.BorderSizePixel = 0
+White.Visible = false
+White.Active = true
+White.Parent = ScreenGui
+Instance.new("UICorner", White).CornerRadius = UDim.new(0, 18)
+local whiteStroke = Instance.new("UIStroke", White)
+whiteStroke.Color = Color3.fromRGB(255, 176, 214)
+whiteStroke.Thickness = 2
+
+local wTitle = Instance.new("TextLabel", White)
+wTitle.Size = UDim2.new(1, -50, 0, 28)
+wTitle.Position = UDim2.new(0, 16, 0, 10)
+wTitle.BackgroundTransparency = 1
+wTitle.Text = "$ whitelist"
+wTitle.TextColor3 = Color3.fromRGB(196, 72, 138)
+wTitle.Font = Enum.Font.FredokaOne
+wTitle.TextSize = 22
+wTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+local wClose = Instance.new("TextButton", White)
+wClose.Size = UDim2.new(0, 26, 0, 26)
+wClose.Position = UDim2.new(1, -36, 0, 10)
+wClose.BackgroundColor3 = Color3.fromRGB(255, 206, 230)
+wClose.Text = "×"
+wClose.TextColor3 = Color3.fromRGB(196, 72, 138)
+wClose.Font = Enum.Font.FredokaOne
+wClose.TextSize = 18
+wClose.AutoButtonColor = false
+Instance.new("UICorner", wClose).CornerRadius = UDim.new(0, 8)
+
+local wSub = Instance.new("TextLabel", White)
+wSub.Size = UDim2.new(1, -24, 0, 16)
+wSub.Position = UDim2.new(0, 16, 0, 40)
+wSub.BackgroundTransparency = 1
+wSub.Text = "⋆ friends to skip ⋆"
+wSub.Font = Enum.Font.FredokaOne
+wSub.TextSize = 14
+wSub.TextXAlignment = Enum.TextXAlignment.Left
+
+local wScroll = Instance.new("ScrollingFrame", White)
+wScroll.Size = UDim2.new(1, -20, 1, -78)
+wScroll.Position = UDim2.new(0, 10, 0, 66)
+wScroll.BackgroundTransparency = 1
+wScroll.BorderSizePixel = 0
+wScroll.ScrollBarThickness = 4
+wScroll.ScrollBarImageColor3 = Color3.fromRGB(255, 170, 215)
+wScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+
+local wList = Instance.new("UIListLayout", wScroll)
+wList.SortOrder = Enum.SortOrder.LayoutOrder
+wList.Padding = UDim.new(0, 8)
+wList:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    wScroll.CanvasSize = UDim2.new(0, 0, 0, wList.AbsoluteContentSize.Y + 8)
+end)
+
+local playerRows = {}
+
+local function makePlayerRow(p)
+    if playerRows[p] then return end
+
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, -6, 0, 52)
+    row.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    row.BorderSizePixel = 0
+    row.Parent = wScroll
+    Instance.new("UICorner", row).CornerRadius = UDim.new(0, 12)
+    local rs = Instance.new("UIStroke", row)
+    rs.Color = Color3.fromRGB(255, 214, 232)
+    rs.Thickness = 1
+
+    local nameLbl = Instance.new("TextLabel", row)
+    nameLbl.Size = UDim2.new(1, -78, 0, 20)
+    nameLbl.Position = UDim2.new(0, 12, 0, 6)
+    nameLbl.BackgroundTransparency = 1
+    nameLbl.Text = p.DisplayName
+    nameLbl.TextColor3 = Color3.fromRGB(70, 70, 78)
+    nameLbl.Font = Enum.Font.GothamMedium
+    nameLbl.TextSize = 14
+    nameLbl.TextXAlignment = Enum.TextXAlignment.Left
+    nameLbl.TextTruncate = Enum.TextTruncate.AtEnd
+
+    local userLbl = Instance.new("TextLabel", row)
+    userLbl.Size = UDim2.new(1, -78, 0, 16)
+    userLbl.Position = UDim2.new(0, 12, 0, 28)
+    userLbl.BackgroundTransparency = 1
+    userLbl.Text = "@" .. p.Name
+    userLbl.TextColor3 = Color3.fromRGB(168, 112, 146)
+    userLbl.Font = Enum.Font.Gotham
+    userLbl.TextSize = 12
+    userLbl.TextXAlignment = Enum.TextXAlignment.Left
+    userLbl.TextTruncate = Enum.TextTruncate.AtEnd
+
+    local on = whitelist[p.UserId] == true
+    local btn = Instance.new("TextButton", row)
+    btn.Size = UDim2.new(0, 46, 0, 24)
+    btn.Position = UDim2.new(1, -58, 0.5, -12)
+    btn.BackgroundColor3 = on and Color3.fromRGB(214, 126, 168) or Color3.fromRGB(255, 228, 240)
+    btn.Text = ""
+    btn.AutoButtonColor = false
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(1, 0)
+
+    local circle = Instance.new("Frame", btn)
+    circle.Size = UDim2.new(0, 18, 0, 18)
+    circle.Position = on and UDim2.new(1, -21, 0.5, -9) or UDim2.new(0, 3, 0.5, -9)
+    circle.BackgroundColor3 = on and Color3.fromRGB(120, 48, 78) or Color3.fromRGB(255, 255, 255)
+    Instance.new("UICorner", circle).CornerRadius = UDim.new(1, 0)
+
+    btn.MouseButton1Click:Connect(function()
+        on = not on
+        whitelist[p.UserId] = on or nil
+        btn.BackgroundColor3 = on and Color3.fromRGB(214, 126, 168) or Color3.fromRGB(255, 228, 240)
+        circle.BackgroundColor3 = on and Color3.fromRGB(120, 48, 78) or Color3.fromRGB(255, 255, 255)
+        circle:TweenPosition(on and UDim2.new(1, -21, 0.5, -9) or UDim2.new(0, 3, 0.5, -9), Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.15, true)
+    end)
+
+    playerRows[p] = row
+end
+
+local function refreshWhitelist()
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= lp then
+            makePlayerRow(p)
+        end
+    end
+end
+
+Players.PlayerAdded:Connect(function(p)
+    if p ~= lp then
+        makePlayerRow(p)
+    end
+end)
+
+Players.PlayerRemoving:Connect(function(p)
+    local row = playerRows[p]
+    if row then
+        row:Destroy()
+        playerRows[p] = nil
+    end
+end)
+
+refreshWhitelist()
+
+local openCard = createCard(42)
+local openLbl = Instance.new("TextLabel", openCard)
+openLbl.Size = UDim2.new(0.62, 0, 1, 0)
+openLbl.Position = UDim2.new(0, 12, 0, 0)
+openLbl.BackgroundTransparency = 1
+openLbl.Text = "♡ whitelist"
+openLbl.TextColor3 = Color3.fromRGB(200, 80, 150)
+openLbl.Font = Enum.Font.FredokaOne
+openLbl.TextSize = 14
+openLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+local openBtn = Instance.new("TextButton", openCard)
+openBtn.Size = UDim2.new(0, 84, 0, 26)
+openBtn.Position = UDim2.new(1, -94, 0.5, -13)
+openBtn.BackgroundColor3 = Color3.fromRGB(255, 230, 245)
+openBtn.Text = "open"
+openBtn.TextColor3 = Color3.fromRGB(196, 72, 138)
+openBtn.Font = Enum.Font.GothamMedium
+openBtn.TextSize = 13
+openBtn.AutoButtonColor = false
+Instance.new("UICorner", openBtn).CornerRadius = UDim.new(0, 8)
+Instance.new("UIStroke", openBtn).Color = Color3.fromRGB(255, 190, 225)
+
+openBtn.MouseButton1Click:Connect(function()
+    White.Visible = not White.Visible
+    openBtn.Text = White.Visible and "close" or "open"
+end)
+wClose.MouseButton1Click:Connect(function()
+    White.Visible = false
+    openBtn.Text = "open"
+end)
+
+-- Character / outfit menu
+local CharMenu = Instance.new("Frame")
+CharMenu.Name = "CharMenu"
+CharMenu.Size = UDim2.fromOffset(cfg.device == "mob" and 280 or 340, 230)
+CharMenu.Position = UDim2.new(0.5, -170, 0.5, -115)
+CharMenu.BackgroundColor3 = Color3.fromRGB(255, 236, 246)
+CharMenu.BorderSizePixel = 0
+CharMenu.Visible = false
+CharMenu.Active = true
+CharMenu.Parent = ScreenGui
+Instance.new("UICorner", CharMenu).CornerRadius = UDim.new(0, 18)
+local charStroke = Instance.new("UIStroke", CharMenu)
+charStroke.Color = Color3.fromRGB(255, 176, 214)
+charStroke.Thickness = 2
+
+local cTitle = Instance.new("TextLabel", CharMenu)
+cTitle.Size = UDim2.new(1, -50, 0, 28)
+cTitle.Position = UDim2.new(0, 16, 0, 12)
+cTitle.BackgroundTransparency = 1
+cTitle.Text = "♡ character"
+cTitle.TextColor3 = Color3.fromRGB(220, 90, 160)
+cTitle.Font = Enum.Font.FredokaOne
+cTitle.TextSize = 22
+cTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+local cClose = Instance.new("TextButton", CharMenu)
+cClose.Size = UDim2.new(0, 26, 0, 26)
+cClose.Position = UDim2.new(1, -36, 0, 12)
+cClose.BackgroundColor3 = Color3.fromRGB(255, 206, 230)
+cClose.Text = "×"
+cClose.TextColor3 = Color3.fromRGB(196, 72, 138)
+cClose.Font = Enum.Font.FredokaOne
+cClose.TextSize = 18
+cClose.AutoButtonColor = false
+Instance.new("UICorner", cClose).CornerRadius = UDim.new(0, 8)
+
+local cSub = Instance.new("TextLabel", CharMenu)
+cSub.Size = UDim2.new(1, -24, 0, 16)
+cSub.Position = UDim2.new(0, 16, 0, 42)
+cSub.BackgroundTransparency = 1
+cSub.Text = "⋆ username or user id outfit ⋆"
+cSub.TextColor3 = Color3.fromRGB(214, 140, 180)
+cSub.Font = Enum.Font.FredokaOne
+cSub.TextSize = 13
+cSub.TextXAlignment = Enum.TextXAlignment.Left
+
+local nameBox = Instance.new("TextBox", CharMenu)
+nameBox.Size = UDim2.new(1, -32, 0, 36)
+nameBox.Position = UDim2.new(0, 16, 0, 72)
+nameBox.BackgroundColor3 = Color3.fromRGB(255, 248, 253)
+nameBox.PlaceholderText = "♡ username or id"
+nameBox.PlaceholderColor3 = Color3.fromRGB(214, 160, 190)
+nameBox.Text = ""
+nameBox.TextColor3 = Color3.fromRGB(196, 72, 138)
+nameBox.Font = Enum.Font.FredokaOne
+nameBox.TextSize = 16
+nameBox.ClearTextOnFocus = false
+Instance.new("UICorner", nameBox).CornerRadius = UDim.new(0, 12)
+Instance.new("UIStroke", nameBox).Color = Color3.fromRGB(255, 190, 225)
+
+local wearBtn = Instance.new("TextButton", CharMenu)
+wearBtn.Size = UDim2.new(1, -32, 0, 36)
+wearBtn.Position = UDim2.new(0, 16, 0, 118)
+wearBtn.BackgroundColor3 = Color3.fromRGB(255, 176, 214)
+wearBtn.Text = "♡ wear outfit"
+wearBtn.TextColor3 = Color3.fromRGB(255, 248, 253)
+wearBtn.Font = Enum.Font.FredokaOne
+wearBtn.TextSize = 16
+wearBtn.AutoButtonColor = false
+Instance.new("UICorner", wearBtn).CornerRadius = UDim.new(0, 12)
+
+local cStatus = Instance.new("TextLabel", CharMenu)
+cStatus.Size = UDim2.new(1, -32, 0, 36)
+cStatus.Position = UDim2.new(0, 16, 0, 162)
+cStatus.BackgroundTransparency = 1
+cStatus.Text = "⋆ type a name, then wear ⋆"
+cStatus.TextColor3 = Color3.fromRGB(214, 140, 180)
+cStatus.Font = Enum.Font.FredokaOne
+cStatus.TextSize = 13
+cStatus.TextWrapped = true
+
+local wearing = false
+local copiedUserId = nil
+
+local function resolveUserId(typed)
+    if string.match(typed, "^%d+$") then
+        return tonumber(typed)
+    end
+    return Players:GetUserIdFromNameAsync(typed)
+end
+
+local function clearOldLook(char)
+    for _, inst in ipairs(char:GetChildren()) do
+        if inst:IsA("Accessory") or inst:IsA("Hat") or inst:IsA("Shirt") or inst:IsA("Pants") or inst:IsA("ShirtGraphic") or inst:IsA("CharacterMesh") or inst:IsA("BodyColors") then
+            inst:Destroy()
+        end
+    end
+    local head = char:FindFirstChild("Head")
+    if head then
+        for _, d in ipairs(head:GetChildren()) do
+            if d:IsA("Decal") then
+                d:Destroy()
+            end
+        end
+    end
+end
+
+local function paintParts(char, dummy)
+    local names = {
+        "Head", "Torso", "Left Arm", "Right Arm", "Left Leg", "Right Leg",
+        "UpperTorso", "LowerTorso",
+        "LeftUpperArm", "LeftLowerArm", "LeftHand",
+        "RightUpperArm", "RightLowerArm", "RightHand",
+        "LeftUpperLeg", "LeftLowerLeg", "LeftFoot",
+        "RightUpperLeg", "RightLowerLeg", "RightFoot",
+    }
+    for _, name in ipairs(names) do
+        local src = dummy:FindFirstChild(name)
+        local dst = char:FindFirstChild(name)
+        if src and dst and src:IsA("BasePart") and dst:IsA("BasePart") then
+            dst.Color = src.Color
+            local sm = src:FindFirstChildOfClass("SpecialMesh")
+            local dm = dst:FindFirstChildOfClass("SpecialMesh")
+            if sm and dm then
+                dm.MeshId = sm.MeshId
+                dm.TextureId = sm.TextureId
+                dm.Scale = sm.Scale
+            end
+        end
+    end
+end
+
+local function copyVisual(char, dummy)
+    clearOldLook(char)
+    for _, inst in ipairs(dummy:GetChildren()) do
+        if inst:IsA("Accessory") or inst:IsA("Hat") or inst:IsA("Shirt") or inst:IsA("Pants") or inst:IsA("ShirtGraphic") or inst:IsA("BodyColors") or inst:IsA("CharacterMesh") then
+            local clone = inst:Clone()
+            clone.Parent = char
+        end
+    end
+    local srcHead = dummy:FindFirstChild("Head")
+    local dstHead = char:FindFirstChild("Head")
+    if srcHead and dstHead then
+        for _, d in ipairs(srcHead:GetChildren()) do
+            if d:IsA("Decal") then
+                d:Clone().Parent = dstHead
+            end
+        end
+    end
+    paintParts(char, dummy)
+end
+
+local copiedTracks = {}
+
+local function stopCopiedAnims()
+    for _, track in ipairs(copiedTracks) do
+        pcall(function()
+            track:Stop()
+        end)
+    end
+    copiedTracks = {}
+end
+
+local function assetId(n)
+    if typeof(n) ~= "number" or n == 0 then return nil end
+    return "rbxassetid://" .. tostring(n)
+end
+
+local function setAnimateIds(animate, desc)
+    if not animate or not desc then return end
+    local map = {
+        idle = desc.IdleAnimation,
+        walk = desc.WalkAnimation,
+        run = desc.RunAnimation,
+        jump = desc.JumpAnimation,
+        fall = desc.FallAnimation,
+        climb = desc.ClimbAnimation,
+        swim = desc.SwimAnimation,
+    }
+    for folderName, animId in pairs(map) do
+        local id = assetId(animId)
+        local folder = animate:FindFirstChild(folderName)
+        if folder and id then
+            for _, child in ipairs(folder:GetChildren()) do
+                if child:IsA("Animation") then
+                    child.AnimationId = id
+                end
+            end
+        end
+    end
+end
+
+local function copyAnimations(char, dummy, desc)
+    stopCopiedAnims()
+    local src = dummy and dummy:FindFirstChild("Animate")
+    local old = char:FindFirstChild("Animate")
+    if src then
+        if old then old:Destroy() end
+        local clone = src:Clone()
+        clone.Disabled = false
+        clone.Parent = char
+        setAnimateIds(clone, desc)
+    else
+        setAnimateIds(old, desc)
+    end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum or not desc then return end
+    local animator = hum:FindFirstChildOfClass("Animator")
+    if not animator then
+        animator = Instance.new("Animator")
+        animator.Parent = hum
+    end
+    local function play(id, priority, looped)
+        local asset = assetId(id)
+        if not asset then return end
+        local anim = Instance.new("Animation")
+        anim.AnimationId = asset
+        local ok, track = pcall(function()
+            return animator:LoadAnimation(anim)
+        end)
+        if ok and track then
+            track.Priority = priority
+            track.Looped = looped
+            track:Play(0.15)
+            table.insert(copiedTracks, track)
+        end
+    end
+    play(desc.IdleAnimation, Enum.AnimationPriority.Idle, true)
+end
+
+local function loadDummy(userId, rig)
+    local desc = Players:GetHumanoidDescriptionFromUserId(userId)
+    local model
+    local ok = pcall(function()
+        model = Players:CreateHumanoidModelFromDescription(desc, rig)
+    end)
+    if not ok or not model then
+        ok = pcall(function()
+            model = Players:CreateHumanoidModelFromUserId(userId)
+        end)
+    end
+    if not ok or not model then
+        error("could not build avatar")
+    end
+    return desc, model
+end
+
+local function applyCopiedAvatar(userId)
+    local char = lp.Character or lp.CharacterAdded:Wait()
+    local hum = char:WaitForChild("Humanoid")
+    local rig = hum.RigType
+    local desc, dummy = loadDummy(userId, rig)
+    pcall(function()
+        hum:ApplyDescription(desc)
+    end)
+    char = lp.Character or char
+    copyVisual(char, dummy)
+    copyAnimations(char, dummy, desc)
+    dummy:Destroy()
+    copiedUserId = userId
+end
+
+local function wearUsername()
+    if wearing then return end
+    local typed = string.gsub(nameBox.Text, "^%s+", "")
+    typed = string.gsub(typed, "%s+$", "")
+    typed = string.gsub(typed, "^@", "")
+    if typed == "" then
+        cStatus.Text = "⋆ type a username or id ⋆"
+        return
+    end
+    wearing = true
+    cStatus.Text = "⋆ finding " .. typed .. " ⋆"
+    task.spawn(function()
+        local ok, err = pcall(function()
+            local userId = resolveUserId(typed)
+            cStatus.Text = "⋆ painting outfit ⋆"
+            applyCopiedAvatar(userId)
+        end)
+        wearing = false
+        if ok then
+            cStatus.Text = "♡ wearing " .. typed .. " + anims ⋆"
+        else
+            cStatus.Text = "⋆ could not load that outfit ⋆"
+        end
+    end)
+end
+
+lp.CharacterAdded:Connect(function()
+    local id = copiedUserId
+    if not id then return end
+    task.wait(0.6)
+    pcall(function()
+        applyCopiedAvatar(id)
+    end)
+end)
+
+wearBtn.MouseButton1Click:Connect(wearUsername)
+nameBox.FocusLost:Connect(function(enter)
+    if enter then
+        wearUsername()
+    end
+end)
+
+local charCard = createCard(42)
+local charLbl = Instance.new("TextLabel", charCard)
+charLbl.Size = UDim2.new(0.62, 0, 1, 0)
+charLbl.Position = UDim2.new(0, 12, 0, 0)
+charLbl.BackgroundTransparency = 1
+charLbl.Text = "♡ character"
+charLbl.TextColor3 = Color3.fromRGB(200, 80, 150)
+charLbl.Font = Enum.Font.FredokaOne
+charLbl.TextSize = 14
+charLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+local charOpen = Instance.new("TextButton", charCard)
+charOpen.Size = UDim2.new(0, 84, 0, 26)
+charOpen.Position = UDim2.new(1, -94, 0.5, -13)
+charOpen.BackgroundColor3 = Color3.fromRGB(255, 230, 245)
+charOpen.Text = "open"
+charOpen.TextColor3 = Color3.fromRGB(196, 72, 138)
+charOpen.Font = Enum.Font.GothamMedium
+charOpen.TextSize = 13
+charOpen.AutoButtonColor = false
+Instance.new("UICorner", charOpen).CornerRadius = UDim.new(0, 8)
+Instance.new("UIStroke", charOpen).Color = Color3.fromRGB(255, 190, 225)
+
+charOpen.MouseButton1Click:Connect(function()
+    CharMenu.Visible = not CharMenu.Visible
+    charOpen.Text = CharMenu.Visible and "close" or "open"
+    if cfg.device == "mob" then
+        CharMenu.Size = UDim2.fromOffset(280, 230)
+        CharMenu.Position = UDim2.new(0.5, -140, 0.5, -115)
+    else
+        CharMenu.Size = UDim2.fromOffset(340, 230)
+        CharMenu.Position = UDim2.new(0.5, 20, 0.5, -115)
+    end
+end)
+cClose.MouseButton1Click:Connect(function()
+    CharMenu.Visible = false
+    charOpen.Text = "open"
+end)
+
+-- Keybinds
+UIS.InputBegan:Connect(function(i, gpe)
+    if gpe then return end
+
+    if cfg.useKeybind and i.KeyCode == cfg.silentAimKey then
+        cfg.silentAim = not cfg.silentAim
+    end
+
+    if triggerUi and triggerUi.isListening() and i.UserInputType == Enum.UserInputType.Keyboard then
+        triggerUi.setKey(i.KeyCode)
+        return
+    end
+
+    if camlockUi and camlockUi.isListening() and i.UserInputType == Enum.UserInputType.Keyboard then
+        camlockUi.setKey(i.KeyCode)
+        return
+    end
+
+    if i.KeyCode == cfg.triggerBotKey then
+        if triggerUi then
+            triggerUi.set(not cfg.triggerBot)
+        else
+            cfg.triggerBot = not cfg.triggerBot
+        end
+    end
+
+    if i.KeyCode == cfg.camlockKey then
+        cfg.camlock = not cfg.camlock
+        if not cfg.camlock then
+            camlockPart = nil
+        end
+    end
+
+    if i.KeyCode == cfg.uiToggleKey then
+        ScreenGui.Enabled = not ScreenGui.Enabled
+    end
+end)
+
+print("♡ Angels Dan FFA loaded successfully ♡")
+
+local dragTarget, dragStartPos, dragOrigin
+local function pointInside(frame, p)
+    if not frame or not frame.Visible then return false end
+    local pos, size = frame.AbsolutePosition, frame.AbsoluteSize
+    return p.X >= pos.X and p.X <= pos.X + size.X and p.Y >= pos.Y and p.Y <= pos.Y + size.Y
+end
+local function onScrollBar(scroll, p)
+    if not scroll or not scroll.Visible then return false end
+    local parent = scroll.Parent
+    if parent and not parent.Visible then return false end
+    local pos, size = scroll.AbsolutePosition, scroll.AbsoluteSize
+    return p.X >= pos.X + size.X - 16 and p.X <= pos.X + size.X + 4 and p.Y >= pos.Y and p.Y <= pos.Y + size.Y
+end
+
+UIS.InputBegan:Connect(function(input)
+    if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
+    local p = input.Position
+    if onScrollBar(Scroll, p) or onScrollBar(wScroll, p) then
+        dragTarget = nil
+        return
+    end
+    local target
+    if pointInside(MiniBubble, p) then target = MiniBubble end
+    if pointInside(Main, p) then target = Main end
+    if pointInside(White, p) then target = White end
+    if pointInside(CharMenu, p) then target = CharMenu end
+    if pointInside(Device, p) then target = Device end
+    if not target then return end
+    dragTarget = target
+    dragStartPos = p
+    dragOrigin = target.Position
+    input.Changed:Connect(function()
+        if input.UserInputState == Enum.UserInputState.End and dragTarget == target then
+            dragTarget = nil
+        end
+    end)
+end)
+
+UIS.InputChanged:Connect(function(input)
+    if not dragTarget then return end
+    if input.UserInputType ~= Enum.UserInputType.MouseMovement and input.UserInputType ~= Enum.UserInputType.Touch then return end
+    local delta = input.Position - dragStartPos
+    local size = dragTarget.AbsoluteSize
+    local newX = math.clamp(dragOrigin.X.Offset + delta.X, 0, math.max(0, cam.ViewportSize.X - size.X))
+    local newY = math.clamp(dragOrigin.Y.Offset + delta.Y, 0, math.max(0, cam.ViewportSize.Y - size.Y))
+    dragTarget.Position = UDim2.fromOffset(newX, newY)
+end)
